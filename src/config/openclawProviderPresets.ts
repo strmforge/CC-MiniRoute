@@ -584,12 +584,18 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
   {
     name: "MiniMax",
     websiteUrl: "https://platform.minimaxi.com",
-    apiKeyUrl: "https://platform.minimaxi.com/subscribe/coding-plan",
+    apiKeyUrl: "https://platform.minimaxi.com/subscribe/token-plan",
     settingsConfig: {
       baseUrl: "https://api.minimaxi.com/v1",
       apiKey: "",
       api: "openai-completions",
       models: [
+        {
+          id: "MiniMax-M3",
+          name: "MiniMax M3",
+          contextWindow: 1000000,
+          cost: { input: 0.001, output: 0.004 },
+        },
         {
           id: "MiniMax-M2.7",
           name: "MiniMax M2.7",
@@ -615,19 +621,28 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
       },
     },
     suggestedDefaults: {
-      model: { primary: "minimax/MiniMax-M2.7" },
-      modelCatalog: { "minimax/MiniMax-M2.7": { alias: "MiniMax" } },
+      model: { primary: "minimax/MiniMax-M3" },
+      modelCatalog: {
+        "minimax/MiniMax-M3": { alias: "MiniMax M3" },
+        "minimax/MiniMax-M2.7": { alias: "MiniMax M2.7" },
+      },
     },
   },
   {
     name: "MiniMax en",
     websiteUrl: "https://platform.minimax.io",
-    apiKeyUrl: "https://platform.minimax.io/subscribe/coding-plan",
+    apiKeyUrl: "https://platform.minimax.io/subscribe/token-plan",
     settingsConfig: {
       baseUrl: "https://api.minimax.io/v1",
       apiKey: "",
       api: "openai-completions",
       models: [
+        {
+          id: "MiniMax-M3",
+          name: "MiniMax M3",
+          contextWindow: 1000000,
+          cost: { input: 0.001, output: 0.004 },
+        },
         {
           id: "MiniMax-M2.7",
           name: "MiniMax M2.7",
@@ -653,8 +668,11 @@ export const openclawProviderPresets: OpenClawProviderPreset[] = [
       },
     },
     suggestedDefaults: {
-      model: { primary: "minimax-en/MiniMax-M2.7" },
-      modelCatalog: { "minimax-en/MiniMax-M2.7": { alias: "MiniMax" } },
+      model: { primary: "minimax-en/MiniMax-M3" },
+      modelCatalog: {
+        "minimax-en/MiniMax-M3": { alias: "MiniMax M3" },
+        "minimax-en/MiniMax-M2.7": { alias: "MiniMax M2.7" },
+      },
     },
   },
   {

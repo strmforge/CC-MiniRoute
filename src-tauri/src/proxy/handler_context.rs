@@ -48,6 +48,7 @@ pub struct RequestContext {
     pub current_provider_id: String,
     /// 请求中的模型名称
     pub request_model: String,
+    pub model_route_override: bool,
     /// 日志标签（如 "Claude"、"Codex"、"Gemini"）
     pub tag: &'static str,
     /// 应用类型字符串（如 "claude"、"codex"、"gemini"）
@@ -126,7 +127,7 @@ impl RequestContext {
 
         // 使用共享的 ProviderRouter 选择 Provider（熔断器状态跨请求保持）
         // 注意：只在这里调用一次，结果传递给 forwarder，避免重复消耗 HalfOpen 名额
-        let providers = state
+        let mut providers = state
             .provider_router
             .select_providers(app_type_str)
             .await
@@ -137,6 +138,15 @@ impl RequestContext {
                 crate::error::AppError::NoProvidersConfigured => ProxyError::NoProvidersConfigured,
                 _ => ProxyError::DatabaseError(e.to_string()),
             })?;
+
+        let model_route_override = prefer_codex_provider_for_model(
+            state,
+            &app_type,
+            app_type_str,
+            &request_model,
+            &mut providers,
+        )
+        .await;
 
         let provider = providers
             .first()
@@ -151,6 +161,14 @@ impl RequestContext {
             providers.len(),
             session_id
         );
+        if model_route_override {
+            log::info!(
+                "[{}] model route override: model={} -> provider={}",
+                tag,
+                request_model,
+                provider.name
+            );
+        }
 
         Ok(Self {
             start_time,
@@ -159,6 +177,7 @@ impl RequestContext {
             providers,
             current_provider_id,
             request_model,
+            model_route_override,
             tag,
             app_type_str,
             app_type,
@@ -235,6 +254,7 @@ impl RequestContext {
             self.optimizer_config.clone(),
             self.copilot_optimizer_config.clone(),
             max_retries,
+            self.model_route_override,
         )
     }
 
@@ -274,6 +294,73 @@ impl RequestContext {
     }
 }
 
+async fn prefer_codex_provider_for_model(
+    state: &ProxyState,
+    app_type: &AppType,
+    app_type_str: &str,
+    request_model: &str,
+    providers: &mut Vec<Provider>,
+) -> bool {
+    if app_type != &AppType::Codex {
+        return false;
+    }
+
+    let request_model = request_model.trim();
+    if request_model.is_empty() || request_model == "unknown" {
+        return false;
+    }
+
+    let mut match_index = providers
+        .iter()
+        .position(|provider| provider_catalog_contains_model(provider, request_model));
+
+    if match_index.is_none() {
+        if let Ok(all_providers) = state.db.get_all_providers(app_type_str) {
+            if let Some(provider) = all_providers
+                .into_values()
+                .find(|provider| provider_catalog_contains_model(provider, request_model))
+            {
+                providers.insert(0, provider);
+                return true;
+            }
+        }
+    }
+
+    let Some(index) = match_index.take() else {
+        return false;
+    };
+
+    if index != 0 {
+        let provider = providers.remove(index);
+        providers.insert(0, provider);
+    }
+
+    true
+}
+
+fn provider_catalog_contains_model(provider: &Provider, request_model: &str) -> bool {
+    if crate::proxy::providers::codex_provider_upstream_model(provider)
+        .as_deref()
+        .is_some_and(|model| crate::codex_config::codex_model_ids_match(model, request_model))
+    {
+        return true;
+    }
+
+    provider
+        .settings_config
+        .get("modelCatalog")
+        .and_then(|catalog| catalog.get("models"))
+        .and_then(|models| models.as_array())
+        .map(|models| {
+            models.iter().any(|model| {
+                crate::codex_config::codex_model_catalog_entry_id(model).is_some_and(|model| {
+                    crate::codex_config::codex_model_ids_match(model, request_model)
+                })
+            })
+        })
+        .unwrap_or(false)
+}
+
 /// Pull the Gemini model name out of an API path.
 ///
 /// Accepts forms like `/v1beta/models/gemini-pro:generateContent`,
@@ -294,7 +381,9 @@ pub(crate) fn extract_gemini_model_from_path(endpoint: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::extract_gemini_model_from_path;
+    use super::{extract_gemini_model_from_path, provider_catalog_contains_model};
+    use crate::provider::Provider;
+    use serde_json::json;
 
     #[test]
     fn extract_model_with_action() {
@@ -367,5 +456,53 @@ mod tests {
                 .as_deref(),
             Some("gemini-2.0-flash"),
         );
+    }
+
+    #[test]
+    fn provider_catalog_matches_slug_entries() {
+        let provider = Provider::with_id(
+            "codex-provider".to_string(),
+            "Codex Provider".to_string(),
+            json!({
+                "modelCatalog": {
+                    "models": [
+                        { "slug": "MiniMax-M3", "display_name": "MiniMax M3" },
+                        { "model": "codex-MiniMax-M3", "displayName": "Codex MiniMax M3" },
+                        { "id": "MiniMax-M2.7", "name": "MiniMax M2.7" }
+                    ]
+                }
+            }),
+            None,
+        );
+
+        assert!(provider_catalog_contains_model(&provider, "MiniMax-M3"));
+        assert!(provider_catalog_contains_model(
+            &provider,
+            "codex-MiniMax-M3"
+        ));
+        assert!(provider_catalog_contains_model(&provider, "MiniMax-M2.7"));
+    }
+
+    #[test]
+    fn provider_catalog_matches_openai_family_upstream_model() {
+        let provider = Provider::with_id(
+            "openai-family".to_string(),
+            "OpenAI Family".to_string(),
+            json!({
+                "config": r#"
+model_provider = "custom"
+model = "gpt-5.5"
+
+[model_providers.custom]
+name = "Custom"
+base_url = "http://127.0.0.1:15721/v1"
+"#
+            }),
+            None,
+        );
+
+        assert!(provider_catalog_contains_model(&provider, "gpt-5.4"));
+        assert!(provider_catalog_contains_model(&provider, "gpt-5.3-codex"));
+        assert!(!provider_catalog_contains_model(&provider, "MiniMax-M3"));
     }
 }

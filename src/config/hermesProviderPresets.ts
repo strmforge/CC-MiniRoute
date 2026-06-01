@@ -582,13 +582,16 @@ export const hermesProviderPresets: HermesProviderPreset[] = [
   {
     name: "MiniMax",
     websiteUrl: "https://platform.minimaxi.com",
-    apiKeyUrl: "https://platform.minimaxi.com/subscribe/coding-plan",
+    apiKeyUrl: "https://platform.minimaxi.com/subscribe/token-plan",
     settingsConfig: {
       name: "minimax",
       base_url: "https://api.minimaxi.com/v1",
       api_key: "",
       api_mode: "chat_completions",
-      models: [{ id: "MiniMax-M2.7", name: "MiniMax M2.7" }],
+      models: [
+        { id: "MiniMax-M3", name: "MiniMax M3", context_length: 1000000 },
+        { id: "MiniMax-M2.7", name: "MiniMax M2.7", context_length: 200000 },
+      ],
     },
     category: "cn_official",
     isPartner: true,
@@ -597,19 +600,22 @@ export const hermesProviderPresets: HermesProviderPreset[] = [
     icon: "minimax",
     iconColor: "#FF6B6B",
     suggestedDefaults: {
-      model: { default: "MiniMax-M2.7", provider: "minimax" },
+      model: { default: "MiniMax-M3", provider: "minimax" },
     },
   },
   {
     name: "MiniMax en",
     websiteUrl: "https://platform.minimax.io",
-    apiKeyUrl: "https://platform.minimax.io/subscribe/coding-plan",
+    apiKeyUrl: "https://platform.minimax.io/subscribe/token-plan",
     settingsConfig: {
       name: "minimax_en",
       base_url: "https://api.minimax.io/v1",
       api_key: "",
       api_mode: "chat_completions",
-      models: [{ id: "MiniMax-M2.7", name: "MiniMax M2.7" }],
+      models: [
+        { id: "MiniMax-M3", name: "MiniMax M3", context_length: 1000000 },
+        { id: "MiniMax-M2.7", name: "MiniMax M2.7", context_length: 200000 },
+      ],
     },
     category: "cn_official",
     isPartner: true,
@@ -618,7 +624,7 @@ export const hermesProviderPresets: HermesProviderPreset[] = [
     icon: "minimax",
     iconColor: "#FF6B6B",
     suggestedDefaults: {
-      model: { default: "MiniMax-M2.7", provider: "minimax_en" },
+      model: { default: "MiniMax-M3", provider: "minimax_en" },
     },
   },
   {

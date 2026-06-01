@@ -70,6 +70,93 @@ fn parse_f64(value: &serde_json::Value) -> Option<f64> {
         .or_else(|| value.as_str().and_then(|s| s.parse().ok()))
 }
 
+fn get_first_f64(object: &serde_json::Value, fields: &[&str]) -> Option<f64> {
+    fields
+        .iter()
+        .filter_map(|field| object.get(*field))
+        .find_map(parse_f64)
+}
+
+fn get_first_reset_time(object: &serde_json::Value, fields: &[&str]) -> Option<String> {
+    fields
+        .iter()
+        .filter_map(|field| object.get(*field))
+        .find_map(extract_reset_time)
+}
+
+fn parse_minimax_token_tiers(body: &serde_json::Value) -> Vec<QuotaTier> {
+    const INTERVAL_TOTAL_FIELDS: &[&str] = &[
+        "current_interval_total_count",
+        "interval_total_count",
+        "five_hour_total_count",
+        "current_5h_total_count",
+        "current_five_hour_total_count",
+    ];
+    const INTERVAL_REMAINING_FIELDS: &[&str] = &[
+        "current_interval_usage_count",
+        "current_interval_remaining_count",
+        "interval_remaining_count",
+        "five_hour_remaining_count",
+        "current_5h_remaining_count",
+        "current_five_hour_remaining_count",
+    ];
+    const INTERVAL_RESET_FIELDS: &[&str] = &[
+        "end_time",
+        "interval_end_time",
+        "five_hour_end_time",
+        "current_5h_end_time",
+        "current_five_hour_end_time",
+    ];
+    const WEEKLY_TOTAL_FIELDS: &[&str] = &[
+        "current_weekly_total_count",
+        "weekly_total_count",
+        "current_weekly_limit_count",
+    ];
+    const WEEKLY_REMAINING_FIELDS: &[&str] = &[
+        "current_weekly_usage_count",
+        "current_weekly_remaining_count",
+        "weekly_remaining_count",
+    ];
+    const WEEKLY_RESET_FIELDS: &[&str] = &[
+        "weekly_end_time",
+        "current_weekly_end_time",
+        "weekly_reset_time",
+    ];
+
+    let Some(model_remains) = body.get("model_remains").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    let Some(item) = model_remains.first() else {
+        return Vec::new();
+    };
+
+    let mut tiers = Vec::new();
+
+    // Older MiniMax responses call this "usage_count", but it represents
+    // remaining quota. Treat all aliases here as remaining counts.
+    let interval_total = get_first_f64(item, INTERVAL_TOTAL_FIELDS).unwrap_or(0.0);
+    let interval_remaining = get_first_f64(item, INTERVAL_REMAINING_FIELDS).unwrap_or(0.0);
+    if interval_total > 0.0 {
+        tiers.push(QuotaTier {
+            name: TIER_FIVE_HOUR.to_string(),
+            utilization: ((interval_total - interval_remaining) / interval_total) * 100.0,
+            resets_at: get_first_reset_time(item, INTERVAL_RESET_FIELDS),
+        });
+    }
+
+    let weekly_total = get_first_f64(item, WEEKLY_TOTAL_FIELDS).unwrap_or(0.0);
+    let weekly_remaining = get_first_f64(item, WEEKLY_REMAINING_FIELDS).unwrap_or(0.0);
+    if weekly_total > 0.0 {
+        tiers.push(QuotaTier {
+            name: TIER_WEEKLY_LIMIT.to_string(),
+            utilization: ((weekly_total - weekly_remaining) / weekly_total) * 100.0,
+            resets_at: get_first_reset_time(item, WEEKLY_RESET_FIELDS),
+        });
+    }
+
+    tiers
+}
+
 fn make_error(msg: String) -> SubscriptionQuota {
     SubscriptionQuota {
         tool: "coding_plan".to_string(),
@@ -370,8 +457,9 @@ async fn query_minimax(api_key: &str, is_cn: bool) -> SubscriptionQuota {
         }
     }
 
-    let mut tiers = Vec::new();
+    let tiers = parse_minimax_token_tiers(&body);
 
+    /*
     if let Some(model_remains) = body.get("model_remains").and_then(|v| v.as_array()) {
         // 只取第一个模型（MiniMax-M*，主力编程模型）
         if let Some(item) = model_remains.first() {
@@ -414,6 +502,7 @@ async fn query_minimax(api_key: &str, is_cn: bool) -> SubscriptionQuota {
             }
         }
     }
+    */
 
     SubscriptionQuota {
         tool: "coding_plan".to_string(),
@@ -474,8 +563,43 @@ pub async fn get_coding_plan_quota(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_zhipu_token_tiers, TIER_FIVE_HOUR, TIER_WEEKLY_LIMIT};
+    use super::{
+        parse_minimax_token_tiers, parse_zhipu_token_tiers, TIER_FIVE_HOUR, TIER_WEEKLY_LIMIT,
+    };
     use serde_json::json;
+
+    #[test]
+    fn minimax_token_plan_accepts_m3_alias_fields_and_string_counts() {
+        let data = json!({
+            "model_remains": [
+                {
+                    "model": "MiniMax-M3",
+                    "five_hour_total_count": "4500",
+                    "five_hour_remaining_count": "4050",
+                    "five_hour_end_time": 2_000_000_000_000_i64,
+                    "weekly_total_count": "45000",
+                    "weekly_remaining_count": "22500",
+                    "weekly_reset_time": "2033-05-18T03:33:20+00:00"
+                }
+            ]
+        });
+
+        let tiers = parse_minimax_token_tiers(&data);
+
+        assert_eq!(tiers.len(), 2);
+        assert_eq!(tiers[0].name, TIER_FIVE_HOUR);
+        assert_eq!(tiers[0].utilization, 10.0);
+        assert_eq!(
+            tiers[0].resets_at.as_deref(),
+            Some("2033-05-18T03:33:20+00:00")
+        );
+        assert_eq!(tiers[1].name, TIER_WEEKLY_LIMIT);
+        assert_eq!(tiers[1].utilization, 50.0);
+        assert_eq!(
+            tiers[1].resets_at.as_deref(),
+            Some("2033-05-18T03:33:20+00:00")
+        );
+    }
 
     #[test]
     fn zhipu_new_plan_two_tiers_sorted_by_reset_time() {

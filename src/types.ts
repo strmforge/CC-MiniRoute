@@ -141,7 +141,8 @@ export type CodexChatThinkingParam =
   | "none"
   | "thinking"
   | "enable_thinking"
-  | "reasoning_split";
+  | "reasoning_split"
+  | "thinking_reasoning_split";
 
 export type CodexChatEffortParam =
   | "none"

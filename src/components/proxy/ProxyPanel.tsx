@@ -56,7 +56,7 @@ export function ProxyPanel({
 
   // 监听地址/端口的本地状态（端口用字符串以支持完全清空）
   const [listenAddress, setListenAddress] = useState("127.0.0.1");
-  const [listenPort, setListenPort] = useState("15721");
+  const [listenPort, setListenPort] = useState("15731");
 
   // 同步全局配置到本地状态
   useEffect(() => {
@@ -546,7 +546,7 @@ export function ProxyPanel({
                     placeholder={t(
                       "proxy.settings.fields.listenPort.placeholder",
                       {
-                        defaultValue: "15721",
+                        defaultValue: "15731",
                       },
                     )}
                   />

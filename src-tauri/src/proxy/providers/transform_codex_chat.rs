@@ -175,6 +175,12 @@ fn apply_reasoning_options(
             "reasoning_split" => {
                 result["reasoning_split"] = json!(reasoning_enabled);
             }
+            "thinking_reasoning_split" => {
+                result["thinking"] = json!({
+                    "type": if reasoning_enabled { "adaptive" } else { "disabled" }
+                });
+                result["reasoning_split"] = json!(reasoning_enabled);
+            }
             _ => {}
         }
     }
@@ -1406,6 +1412,42 @@ mod tests {
 
         assert_eq!(result["enable_thinking"], true);
         assert!(result.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn responses_request_to_chat_maps_minimax_m3_thinking_and_reasoning_split() {
+        let config = CodexChatReasoningConfig {
+            supports_thinking: Some(true),
+            supports_effort: Some(false),
+            thinking_param: Some("thinking_reasoning_split".to_string()),
+            effort_param: Some("none".to_string()),
+            effort_value_mode: None,
+            output_format: Some("reasoning_details".to_string()),
+        };
+
+        let enabled_input = json!({
+            "model": "MiniMax-M3",
+            "input": "hello",
+            "reasoning": {"effort": "high"}
+        });
+        let enabled =
+            responses_to_chat_completions_with_reasoning(enabled_input, Some(&config)).unwrap();
+
+        assert_eq!(enabled["thinking"]["type"], "adaptive");
+        assert_eq!(enabled["reasoning_split"], true);
+        assert!(enabled.get("reasoning_effort").is_none());
+
+        let disabled_input = json!({
+            "model": "MiniMax-M3",
+            "input": "hello",
+            "reasoning": {"effort": "none"}
+        });
+        let disabled =
+            responses_to_chat_completions_with_reasoning(disabled_input, Some(&config)).unwrap();
+
+        assert_eq!(disabled["thinking"]["type"], "disabled");
+        assert_eq!(disabled["reasoning_split"], false);
+        assert!(disabled.get("reasoning_effort").is_none());
     }
 
     #[test]

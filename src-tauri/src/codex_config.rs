@@ -11,7 +11,14 @@ use std::process::Command;
 use toml_edit::DocumentMut;
 
 pub const CC_SWITCH_CODEX_MODEL_PROVIDER_ID: &str = "custom";
-pub const CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME: &str = "cc-switch-model-catalog.json";
+pub const CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME: &str = "cc-miniroute-model-catalog.json";
+pub(crate) const CODEX_OPENAI_MODEL_SLUGS: &[&str] = &[
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.3-codex",
+    "gpt-5.2",
+];
 const CODEX_MODEL_CATALOG_TEMPLATE_SLUG: &str = "gpt-5.5";
 
 /// Reserved built-in provider IDs from OpenAI Codex's config/model-provider
@@ -172,6 +179,79 @@ pub(crate) fn is_custom_codex_model_provider_id(id: &str) -> bool {
             .any(|reserved| reserved.eq_ignore_ascii_case(id))
 }
 
+pub(crate) fn is_codex_openai_family_model(model: &str) -> bool {
+    let model = model.trim();
+    CODEX_OPENAI_MODEL_SLUGS
+        .iter()
+        .any(|known| known.eq_ignore_ascii_case(model))
+}
+
+pub(crate) fn codex_model_ids_match(configured_model: &str, request_model: &str) -> bool {
+    let configured_model = configured_model.trim();
+    let request_model = request_model.trim();
+    if configured_model.eq_ignore_ascii_case(request_model) {
+        return true;
+    }
+
+    is_codex_openai_family_model(configured_model) && is_codex_openai_family_model(request_model)
+}
+
+pub(crate) fn codex_openai_model_display_name(model: &str) -> Option<&'static str> {
+    let model = model.trim();
+    CODEX_OPENAI_MODEL_SLUGS
+        .iter()
+        .find(|known| known.eq_ignore_ascii_case(model))
+        .map(|known| match *known {
+            "gpt-5.5" => "GPT-5.5",
+            "gpt-5.4" => "GPT-5.4",
+            "gpt-5.4-mini" => "GPT-5.4-Mini",
+            "gpt-5.3-codex" => "GPT-5.3-Codex",
+            "gpt-5.2" => "GPT-5.2",
+            _ => *known,
+        })
+}
+
+pub(crate) fn codex_openai_model_context_window(model: &str) -> Option<u64> {
+    is_codex_openai_family_model(model).then_some(272_000)
+}
+
+pub(crate) fn codex_model_catalog_entry_id(entry: &Value) -> Option<&str> {
+    ["slug", "model", "id", "name"]
+        .into_iter()
+        .filter_map(|field| entry.get(field).and_then(|value| value.as_str()))
+        .map(str::trim)
+        .find(|model| !model.is_empty())
+}
+
+fn codex_model_catalog_entry_display_name<'a>(entry: &'a Value, model: &'a str) -> &'a str {
+    ["displayName", "display_name", "name"]
+        .into_iter()
+        .filter_map(|field| entry.get(field).and_then(|value| value.as_str()))
+        .map(str::trim)
+        .find(|name| !name.is_empty())
+        .or_else(|| codex_openai_model_display_name(model))
+        .unwrap_or(model)
+}
+
+fn codex_model_catalog_entry_context_window(
+    entry: &Value,
+    model: &str,
+    default_context_window: u64,
+) -> u64 {
+    [
+        "contextWindow",
+        "context_window",
+        "maxContextWindow",
+        "max_context_window",
+        "maxTokens",
+        "max_tokens",
+    ]
+    .into_iter()
+    .find_map(|field| parse_codex_positive_u64(entry.get(field)))
+    .or_else(|| codex_openai_model_context_window(model))
+    .unwrap_or(default_context_window)
+}
+
 /// Write only Codex `config.toml` for provider switching.
 ///
 /// Codex login state lives in `auth.json`; provider routing, endpoint, model,
@@ -297,10 +377,17 @@ fn codex_catalog_model_entry(
     };
 
     entry_obj.insert("slug".to_string(), json!(model));
+    entry_obj.insert("model".to_string(), json!(model));
+    entry_obj.insert("id".to_string(), json!(model));
     entry_obj.insert("display_name".to_string(), json!(display_name));
+    entry_obj.insert("name".to_string(), json!(display_name));
+    entry_obj.insert("displayName".to_string(), json!(display_name));
     entry_obj.insert("description".to_string(), json!(display_name));
     entry_obj.insert("context_window".to_string(), json!(context_window));
+    entry_obj.insert("contextWindow".to_string(), json!(context_window));
     entry_obj.insert("max_context_window".to_string(), json!(context_window));
+    entry_obj.insert("maxContextWindow".to_string(), json!(context_window));
+    entry_obj.insert("maxTokens".to_string(), json!(context_window));
     entry_obj.insert("priority".to_string(), json!(1000 + priority));
     entry_obj.insert("additional_speed_tiers".to_string(), json!([]));
     entry_obj.insert("service_tiers".to_string(), json!([]));
@@ -332,12 +419,7 @@ fn codex_catalog_model_specs(settings: &Value, config_text: &str) -> Vec<CodexCa
     let mut specs = Vec::new();
 
     for model_config in models {
-        let Some(model) = model_config
-            .get("model")
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|model| !model.is_empty())
-        else {
+        let Some(model) = codex_model_catalog_entry_id(model_config) else {
             continue;
         };
 
@@ -345,25 +427,30 @@ fn codex_catalog_model_specs(settings: &Value, config_text: &str) -> Vec<CodexCa
             continue;
         }
 
-        let display_name = model_config
-            .get("displayName")
-            .or_else(|| model_config.get("display_name"))
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-            .unwrap_or(model);
-        let context_window = parse_codex_positive_u64(
-            model_config
-                .get("contextWindow")
-                .or_else(|| model_config.get("context_window")),
-        )
-        .unwrap_or(default_context_window);
+        let display_name = codex_model_catalog_entry_display_name(model_config, model);
+        let context_window =
+            codex_model_catalog_entry_context_window(model_config, model, default_context_window);
 
         specs.push(CodexCatalogModelSpec {
             model: model.to_string(),
             display_name: display_name.to_string(),
             context_window,
         });
+
+        if is_codex_openai_family_model(model) {
+            for openai_model in CODEX_OPENAI_MODEL_SLUGS {
+                if seen.insert((*openai_model).to_string()) {
+                    specs.push(CodexCatalogModelSpec {
+                        model: (*openai_model).to_string(),
+                        display_name: codex_openai_model_display_name(openai_model)
+                            .unwrap_or(openai_model)
+                            .to_string(),
+                        context_window: codex_openai_model_context_window(openai_model)
+                            .unwrap_or(context_window),
+                    });
+                }
+            }
+        }
     }
 
     specs
@@ -595,32 +682,21 @@ fn build_simplified_catalog_from_texts(config_text: &str, catalog_text: &str) ->
 
     let mut entries = Vec::with_capacity(models.len());
     for entry in models {
-        let Some(model) = entry
-            .get("slug")
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        else {
+        let Some(model) = codex_model_catalog_entry_id(entry) else {
             continue;
         };
 
         let mut obj = serde_json::Map::new();
         obj.insert("model".to_string(), json!(model));
 
-        if let Some(display_name) = entry
-            .get("display_name")
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty() && *s != model)
-        {
+        let display_name = codex_model_catalog_entry_display_name(entry, model);
+        if display_name != model {
             obj.insert("displayName".to_string(), json!(display_name));
         }
 
-        if let Some(context_window) = entry
-            .get("context_window")
-            .and_then(|v| v.as_u64())
-            .filter(|v| *v > 0 && *v != default_context_window)
-        {
+        let context_window =
+            codex_model_catalog_entry_context_window(entry, model, default_context_window);
+        if context_window != default_context_window {
             obj.insert("contextWindow".to_string(), json!(context_window));
         }
 
@@ -1493,9 +1569,43 @@ base_url = "https://production.api/v1"
             Some("deepseek-v4-flash")
         );
         assert_eq!(
+            models[0].get("model").and_then(|value| value.as_str()),
+            Some("deepseek-v4-flash")
+        );
+        assert_eq!(
+            models[0].get("id").and_then(|value| value.as_str()),
+            Some("deepseek-v4-flash")
+        );
+        assert_eq!(
+            models[0].get("name").and_then(|value| value.as_str()),
+            Some("DeepSeek V4 Flash")
+        );
+        assert_eq!(
+            models[0]
+                .get("displayName")
+                .and_then(|value| value.as_str()),
+            Some("DeepSeek V4 Flash")
+        );
+        assert_eq!(
             models[0]
                 .get("context_window")
                 .and_then(|value| value.as_u64()),
+            Some(64_000)
+        );
+        assert_eq!(
+            models[0]
+                .get("contextWindow")
+                .and_then(|value| value.as_u64()),
+            Some(64_000)
+        );
+        assert_eq!(
+            models[0]
+                .get("maxContextWindow")
+                .and_then(|value| value.as_u64()),
+            Some(64_000)
+        );
+        assert_eq!(
+            models[0].get("maxTokens").and_then(|value| value.as_u64()),
             Some(64_000)
         );
         assert_eq!(
@@ -1529,6 +1639,65 @@ base_url = "https://production.api/v1"
                 .get("availability_nux")
                 .is_some_and(|value| value.is_null()),
             "generated third-party entries should not inherit GPT-5.5 launch messaging"
+        );
+    }
+
+    #[test]
+    fn model_catalog_specs_accept_full_codex_catalog_fields() {
+        let settings = json!({
+            "modelCatalog": {
+                "models": [
+                    {
+                        "slug": "MiniMax-M3",
+                        "display_name": "MiniMax M3",
+                        "context_window": 1000000
+                    },
+                    {
+                        "id": "deepseek-v4-pro",
+                        "name": "DeepSeek V4 Pro",
+                        "max_context_window": "1000000"
+                    }
+                ]
+            }
+        });
+
+        let specs = codex_catalog_model_specs(&settings, r#"model_context_window = 128000"#);
+
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].model, "MiniMax-M3");
+        assert_eq!(specs[0].display_name, "MiniMax M3");
+        assert_eq!(specs[0].context_window, 1_000_000);
+        assert_eq!(specs[1].model, "deepseek-v4-pro");
+        assert_eq!(specs[1].display_name, "DeepSeek V4 Pro");
+        assert_eq!(specs[1].context_window, 1_000_000);
+    }
+
+    #[test]
+    fn model_catalog_specs_expand_openai_family_models() {
+        let settings = json!({
+            "modelCatalog": {
+                "models": [
+                    { "model": "gpt-5.5", "displayName": "GPT-5.5" }
+                ]
+            }
+        });
+
+        let specs = codex_catalog_model_specs(&settings, "");
+        let models: Vec<_> = specs.iter().map(|spec| spec.model.as_str()).collect();
+
+        assert_eq!(
+            models,
+            vec![
+                "gpt-5.5",
+                "gpt-5.4",
+                "gpt-5.4-mini",
+                "gpt-5.3-codex",
+                "gpt-5.2"
+            ]
+        );
+        assert!(
+            specs.iter().all(|spec| spec.context_window == 272_000),
+            "OpenAI family entries should use the Codex catalog context window"
         );
     }
 
@@ -1621,6 +1790,31 @@ name = "any"
         assert_eq!(
             models[1].get("displayName").and_then(|v| v.as_str()),
             Some("DeepSeek Flash")
+        );
+    }
+
+    #[test]
+    fn build_simplified_catalog_accepts_camel_case_entries() {
+        let catalog = r#"{
+            "models": [
+                { "model": "MiniMax-M3", "displayName": "MiniMax M3", "contextWindow": 1000000 }
+            ]
+        }"#;
+
+        let result = build_simplified_catalog_from_texts("", catalog).expect("entry");
+        let entry = &result.get("models").unwrap().as_array().unwrap()[0];
+
+        assert_eq!(
+            entry.get("model").and_then(|value| value.as_str()),
+            Some("MiniMax-M3")
+        );
+        assert_eq!(
+            entry.get("displayName").and_then(|value| value.as_str()),
+            Some("MiniMax M3")
+        );
+        assert_eq!(
+            entry.get("contextWindow").and_then(|value| value.as_u64()),
+            Some(1_000_000)
         );
     }
 

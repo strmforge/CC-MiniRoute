@@ -111,7 +111,8 @@ fn handle_deeplink_url(
     focus_main_window: bool,
     source: &str,
 ) -> bool {
-    if !url_str.starts_with("ccswitch://") {
+    let scheme_prefix = format!("{}://", crate::config::DEEP_LINK_SCHEME);
+    if !url_str.starts_with(&scheme_prefix) {
         return false;
     }
 
@@ -292,9 +293,7 @@ pub fn run() {
             // 注册 Updater 插件（桌面端）
             #[cfg(desktop)]
             {
-                if let Err(e) = app
-                    .handle()
-                    .plugin(tauri_plugin_updater::Builder::new().build())
+                if let Some(e) = Option::<String>::None
                 {
                     // 若配置不完整（如缺少 pubkey），跳过 Updater 而不中断应用
                     log::warn!("初始化 Updater 插件失败，已跳过：{e}");
@@ -312,7 +311,8 @@ pub fn run() {
                 }
 
                 // 启动时删除旧日志文件，实现单文件覆盖效果
-                let log_file_path = log_dir.join("cc-switch.log");
+                let log_file_path =
+                    log_dir.join(format!("{}.log", crate::config::APP_LOG_BASENAME));
                 let _ = std::fs::remove_file(&log_file_path);
 
                 app.handle().plugin(
@@ -323,7 +323,7 @@ pub fn run() {
                             Target::new(TargetKind::Stdout),
                             Target::new(TargetKind::Folder {
                                 path: log_dir,
-                                file_name: Some("cc-switch".into()),
+                                file_name: Some(crate::config::APP_LOG_BASENAME.into()),
                             }),
                         ])
                         // 单文件模式：启动时删除旧文件，达到大小时轮转
@@ -344,7 +344,7 @@ pub fn run() {
 
             // 初始化数据库
             let app_config_dir = crate::config::get_app_config_dir();
-            let db_path = app_config_dir.join("cc-switch.db");
+            let db_path = app_config_dir.join(crate::config::APP_DATABASE_FILENAME);
             let json_path = app_config_dir.join("config.json");
 
             // 检查是否需要从 config.json 迁移到 SQLite
@@ -819,7 +819,7 @@ pub fn run() {
 
             // 构建托盘
             let mut tray_builder = TrayIconBuilder::with_id(tray::TRAY_ID)
-                .tooltip("CC Switch") // 鼠标悬停提示
+                .tooltip(crate::config::APP_DISPLAY_NAME)
                 .on_tray_icon_event(|tray, event| match event {
                     // 鼠标悬停/点击到托盘图标时，后台异步刷新用量缓存，
                     // 让用户下一次（或快速打开菜单的那一刻）看到较新的数字。
@@ -1461,7 +1461,8 @@ pub fn run() {
                         let url_str = url.to_string();
                         log::info!("RunEvent::Opened with URL: {url_str}");
 
-                        if url_str.starts_with("ccswitch://") {
+                        let scheme_prefix = format!("{}://", crate::config::DEEP_LINK_SCHEME);
+                        if url_str.starts_with(&scheme_prefix) {
                             if crate::lightweight::is_lightweight_mode() {
                                 if let Err(e) = crate::lightweight::exit_lightweight_mode(app_handle)
                                 {

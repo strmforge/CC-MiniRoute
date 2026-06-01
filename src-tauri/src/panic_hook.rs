@@ -22,7 +22,7 @@ pub fn init_app_config_dir(dir: PathBuf) {
 fn default_app_config_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".cc-switch")
+        .join(crate::config::APP_CONFIG_DIR_NAME)
 }
 
 /// 获取应用配置目录（优先使用初始化时写入的值；不会 panic）
@@ -173,7 +173,11 @@ Stack Trace (Backtrace)
             let _ = file.flush();
 
             // 记录日志文件位置到 stderr
-            eprintln!("\n[CC-Switch] Crash log saved to: {}", log_path.display());
+            eprintln!(
+                "\n[{}] Crash log saved to: {}",
+                crate::config::APP_DISPLAY_NAME,
+                log_path.display()
+            );
         }
 
         // 同时输出到 stderr（便于开发调试）

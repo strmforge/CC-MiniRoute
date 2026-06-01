@@ -13,6 +13,7 @@ use crate::services::provider::{
     build_effective_settings_with_common_config, write_live_with_common_config,
 };
 use serde_json::{json, Map, Value};
+use std::collections::HashSet;
 use std::str::FromStr;
 use std::sync::Arc;
 use tauri::Emitter;
@@ -355,7 +356,7 @@ impl ProxyService {
             Some(provider),
         );
         effective_settings["config"] = json!(updated_config);
-        Self::attach_codex_model_catalog_from_provider(&mut effective_settings, Some(provider));
+        self.attach_codex_model_catalog_for_miniroute(&mut effective_settings, Some(provider));
 
         self.write_codex_live_for_provider(&effective_settings, Some(provider))?;
         Ok(())
@@ -1185,7 +1186,7 @@ impl ProxyService {
                 codex_provider.as_ref(),
             );
             live_config["config"] = json!(updated_config);
-            Self::attach_codex_model_catalog_from_provider(
+            self.attach_codex_model_catalog_for_miniroute(
                 &mut live_config,
                 codex_provider.as_ref(),
             );
@@ -1252,7 +1253,7 @@ impl ProxyService {
                     codex_provider.as_ref(),
                 );
                 live_config["config"] = json!(updated_config);
-                Self::attach_codex_model_catalog_from_provider(
+                self.attach_codex_model_catalog_for_miniroute(
                     &mut live_config,
                     codex_provider.as_ref(),
                 );
@@ -1331,7 +1332,7 @@ impl ProxyService {
                         codex_provider.as_ref(),
                     );
                     live_config["config"] = json!(updated_config);
-                    Self::attach_codex_model_catalog_from_provider(
+                    self.attach_codex_model_catalog_for_miniroute(
                         &mut live_config,
                         codex_provider.as_ref(),
                     );
@@ -1984,23 +1985,103 @@ impl ProxyService {
         updated
     }
 
-    fn attach_codex_model_catalog_from_provider(
+    fn attach_codex_model_catalog_for_miniroute(
+        &self,
         live_config: &mut Value,
         provider: Option<&Provider>,
     ) {
-        let Some(provider) = provider else {
-            return;
-        };
-
-        let model_catalog = provider
-            .settings_config
-            .get("modelCatalog")
-            .cloned()
+        let model_catalog = self
+            .combined_codex_model_catalog(provider)
             .unwrap_or_else(|| json!({ "models": [] }));
 
         if let Some(root) = live_config.as_object_mut() {
             root.insert("modelCatalog".to_string(), model_catalog);
         }
+    }
+
+    fn combined_codex_model_catalog(&self, provider: Option<&Provider>) -> Option<Value> {
+        let mut seen = HashSet::new();
+        let mut models = Vec::new();
+
+        if let Some(provider) = provider {
+            Self::append_codex_catalog_models(provider, &mut seen, &mut models);
+        }
+
+        if let Ok(providers) = self.db.get_all_providers(AppType::Codex.as_str()) {
+            for provider in providers.values() {
+                Self::append_codex_catalog_models(provider, &mut seen, &mut models);
+            }
+        }
+
+        (!models.is_empty()).then(|| json!({ "models": models }))
+    }
+
+    fn append_codex_catalog_models(
+        provider: &Provider,
+        seen: &mut HashSet<String>,
+        models: &mut Vec<Value>,
+    ) {
+        let catalog_models = provider
+            .settings_config
+            .get("modelCatalog")
+            .and_then(|catalog| catalog.get("models"))
+            .and_then(|models| models.as_array());
+
+        if let Some(catalog_models) = catalog_models {
+            for model in catalog_models {
+                let Some(model_id) = crate::codex_config::codex_model_catalog_entry_id(model)
+                else {
+                    continue;
+                };
+
+                if seen.insert(model_id.to_ascii_lowercase()) {
+                    models.push(model.clone());
+                }
+
+                if crate::codex_config::is_codex_openai_family_model(model_id) {
+                    Self::append_codex_openai_family_models(seen, models);
+                }
+            }
+        }
+
+        if let Some(model_id) = crate::proxy::providers::codex_provider_upstream_model(provider)
+            .map(|model| model.trim().to_string())
+            .filter(|model| !model.is_empty())
+        {
+            if crate::codex_config::is_codex_openai_family_model(&model_id) {
+                Self::append_codex_openai_family_models(seen, models);
+            } else if seen.insert(model_id.to_ascii_lowercase()) {
+                models.push(Self::codex_simplified_catalog_entry(
+                    &model_id, &model_id, 128_000,
+                ));
+            }
+        }
+    }
+
+    fn append_codex_openai_family_models(seen: &mut HashSet<String>, models: &mut Vec<Value>) {
+        for model_id in crate::codex_config::CODEX_OPENAI_MODEL_SLUGS {
+            if seen.insert(model_id.to_ascii_lowercase()) {
+                models.push(Self::codex_simplified_catalog_entry(
+                    model_id,
+                    crate::codex_config::codex_openai_model_display_name(model_id)
+                        .unwrap_or(model_id),
+                    crate::codex_config::codex_openai_model_context_window(model_id)
+                        .unwrap_or(272_000),
+                ));
+            }
+        }
+    }
+
+    fn codex_simplified_catalog_entry(
+        model: &str,
+        display_name: &str,
+        context_window: u64,
+    ) -> Value {
+        json!({
+            "model": model,
+            "displayName": display_name,
+            "contextWindow": context_window,
+        })
     }
 
     fn read_claude_live(&self) -> Result<Value, String> {

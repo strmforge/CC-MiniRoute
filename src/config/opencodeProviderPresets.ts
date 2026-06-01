@@ -42,6 +42,13 @@ export const OPENCODE_PRESET_MODEL_VARIANTS: Record<
 > = {
   "@ai-sdk/openai-compatible": [
     {
+      id: "MiniMax-M3",
+      name: "MiniMax M3",
+      contextLimit: 1000000,
+      outputLimit: 131072,
+      modalities: { input: ["text", "image", "video"], output: ["text"] },
+    },
+    {
       id: "MiniMax-M2.7",
       name: "MiniMax M2.7",
       contextLimit: 204800,
@@ -801,7 +808,7 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
   {
     name: "MiniMax",
     websiteUrl: "https://platform.minimaxi.com",
-    apiKeyUrl: "https://platform.minimaxi.com/subscribe/coding-plan",
+    apiKeyUrl: "https://platform.minimaxi.com/subscribe/token-plan",
     settingsConfig: {
       npm: "@ai-sdk/openai-compatible",
       name: "MiniMax",
@@ -811,6 +818,7 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
         setCacheKey: true,
       },
       models: {
+        "MiniMax-M3": { name: "MiniMax M3" },
         "MiniMax-M2.7": { name: "MiniMax M2.7" },
       },
     },
@@ -834,7 +842,7 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
   {
     name: "MiniMax en",
     websiteUrl: "https://platform.minimax.io",
-    apiKeyUrl: "https://platform.minimax.io/subscribe/coding-plan",
+    apiKeyUrl: "https://platform.minimax.io/subscribe/token-plan",
     settingsConfig: {
       npm: "@ai-sdk/openai-compatible",
       name: "MiniMax en",
@@ -844,6 +852,7 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
         setCacheKey: true,
       },
       models: {
+        "MiniMax-M3": { name: "MiniMax M3" },
         "MiniMax-M2.7": { name: "MiniMax M2.7" },
       },
     },

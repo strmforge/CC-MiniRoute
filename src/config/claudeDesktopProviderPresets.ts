@@ -473,12 +473,12 @@ export const claudeDesktopProviderPresets: ClaudeDesktopProviderPreset[] = [
   {
     name: "MiniMax",
     websiteUrl: "https://platform.minimaxi.com",
-    apiKeyUrl: "https://platform.minimaxi.com/subscribe/coding-plan",
+    apiKeyUrl: "https://platform.minimaxi.com/subscribe/token-plan",
     category: "cn_official",
     baseUrl: "https://api.minimaxi.com/anthropic",
     mode: "proxy",
     apiFormat: "anthropic",
-    modelRoutes: brandedRoutes("MiniMax-M2.7", "MiniMax-M2.7", "MiniMax-M2.7"),
+    modelRoutes: brandedRoutes("MiniMax-M3", "MiniMax-M3", "MiniMax-M3"),
     isPartner: true,
     partnerPromotionKey: "minimax_cn",
     theme: {
@@ -491,12 +491,12 @@ export const claudeDesktopProviderPresets: ClaudeDesktopProviderPreset[] = [
   {
     name: "MiniMax en",
     websiteUrl: "https://platform.minimax.io",
-    apiKeyUrl: "https://platform.minimax.io/subscribe/coding-plan",
+    apiKeyUrl: "https://platform.minimax.io/subscribe/token-plan",
     category: "cn_official",
     baseUrl: "https://api.minimax.io/anthropic",
     mode: "proxy",
     apiFormat: "anthropic",
-    modelRoutes: brandedRoutes("MiniMax-M2.7", "MiniMax-M2.7", "MiniMax-M2.7"),
+    modelRoutes: brandedRoutes("MiniMax-M3", "MiniMax-M3", "MiniMax-M3"),
     isPartner: true,
     partnerPromotionKey: "minimax_en",
     theme: {

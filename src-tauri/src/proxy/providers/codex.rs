@@ -111,9 +111,7 @@ fn codex_provider_catalog_model_ids(provider: &Provider) -> HashSet<String> {
         .map(|models| {
             models
                 .iter()
-                .filter_map(|model| model.get("model").and_then(|value| value.as_str()))
-                .map(str::trim)
-                .filter(|model| !model.is_empty())
+                .filter_map(crate::codex_config::codex_model_catalog_entry_id)
                 .map(ToString::to_string)
                 .collect()
         })
@@ -137,7 +135,10 @@ pub fn apply_codex_chat_upstream_model(
         .map(str::trim)
         .filter(|model| !model.is_empty())
     {
-        if catalog_model_ids.contains(request_model) {
+        if catalog_model_ids
+            .iter()
+            .any(|model| crate::codex_config::codex_model_ids_match(model, request_model))
+        {
             return Some(request_model.to_string());
         }
     }
@@ -269,7 +270,7 @@ fn infer_codex_chat_reasoning_config(
         return Some(CodexChatReasoningConfig {
             supports_thinking: Some(true),
             supports_effort: Some(false),
-            thinking_param: Some("reasoning_split".to_string()),
+            thinking_param: Some("thinking_reasoning_split".to_string()),
             effort_param: Some("none".to_string()),
             effort_value_mode: None,
             output_format: Some("reasoning_details".to_string()),
@@ -866,6 +867,43 @@ wire_api = "responses"
     }
 
     #[test]
+    fn test_apply_codex_chat_upstream_model_preserves_slug_catalog_model_selection() {
+        let mut provider = create_provider(json!({
+            "config": r#"
+model_provider = "minimax"
+model = "MiniMax-M3"
+
+[model_providers.minimax]
+name = "MiniMax"
+base_url = "https://api.minimax.chat/v1"
+wire_api = "responses"
+"#,
+            "modelCatalog": {
+                "models": [
+                    { "model": "MiniMax-M3", "displayName": "MiniMax M3" },
+                    { "slug": "MiniMax-M2.7", "display_name": "MiniMax M2.7" }
+                ]
+            }
+        }));
+        provider.meta = Some(crate::provider::ProviderMeta {
+            api_format: Some("openai_chat".to_string()),
+            ..Default::default()
+        });
+        let mut body = json!({
+            "model": "MiniMax-M3",
+            "input": "ping"
+        });
+
+        let upstream_model = apply_codex_chat_upstream_model(&provider, &mut body);
+
+        assert_eq!(upstream_model.as_deref(), Some("MiniMax-M3"));
+        assert_eq!(
+            body.get("model").and_then(|v| v.as_str()),
+            Some("MiniMax-M3")
+        );
+    }
+
+    #[test]
     fn test_resolve_codex_chat_reasoning_infers_deepseek_effort_support() {
         let provider = create_provider(json!({
             "config": r#"
@@ -963,7 +1001,7 @@ wire_api = "chat"
 "#
         }));
 
-        // 模型是 MiniMax（官方用 reasoning_split），但平台是 SiliconFlow —— 应走平台的 enable_thinking。
+        // 模型是 MiniMax（官方用 thinking + reasoning_split），但平台是 SiliconFlow —— 应走平台的 enable_thinking。
         let config = resolve_codex_chat_reasoning_config(
             &provider,
             &json!({ "model": "MiniMaxAI/MiniMax-M2.7" }),

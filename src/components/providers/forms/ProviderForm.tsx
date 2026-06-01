@@ -55,6 +55,7 @@ import {
 } from "@/utils/providerConfigUtils";
 import { mergeProviderMeta } from "@/utils/providerMetaUtils";
 import {
+  extractCodexModelName,
   extractCodexWireApi,
   setCodexWireApi,
   setCodexModelName as setCodexModelNameInConfig,
@@ -173,6 +174,53 @@ export const normalizeCodexCatalogModelsForSave = (
   }
 
   return normalized;
+};
+
+const normalizedCodexModelId = (model: string | undefined | null): string =>
+  (model ?? "").trim();
+
+const codexCatalogContainsModel = (
+  models: CodexCatalogModel[],
+  model: string,
+): boolean => {
+  const target = normalizedCodexModelId(model);
+  return Boolean(
+    target &&
+      models.some((item) => normalizedCodexModelId(item.model) === target),
+  );
+};
+
+const firstCodexCatalogModel = (
+  models: CodexCatalogModel[],
+): string | undefined =>
+  models.map((item) => normalizedCodexModelId(item.model)).find(Boolean);
+
+const findChangedCodexCatalogModel = (
+  previous: CodexCatalogModel[],
+  next: CodexCatalogModel[],
+): string | undefined => {
+  for (let index = 0; index < next.length; index += 1) {
+    const nextModel = normalizedCodexModelId(next[index]?.model);
+    if (!nextModel) continue;
+    const previousModel = normalizedCodexModelId(previous[index]?.model);
+    if (nextModel !== previousModel) {
+      return nextModel;
+    }
+  }
+  return undefined;
+};
+
+export const resolveCodexDefaultModelForSave = (
+  configText: string,
+  models: CodexCatalogModel[],
+): string | undefined => {
+  const currentModel = normalizedCodexModelId(
+    extractCodexModelName(configText),
+  );
+  if (codexCatalogContainsModel(models, currentModel)) {
+    return currentModel;
+  }
+  return firstCodexCatalogModel(models);
 };
 
 const normalizeCodexChatReasoningForSave = (
@@ -565,6 +613,31 @@ function ProviderFormFull({
       });
     },
     [setCodexConfig, debouncedValidate],
+  );
+
+  const handleCodexCatalogModelsChange = useCallback(
+    (models: CodexCatalogModel[]) => {
+      setCodexCatalogModels((previousModels) => {
+        const changedModel = findChangedCodexCatalogModel(
+          previousModels,
+          models,
+        );
+
+        if (changedModel) {
+          setCodexConfig((previousConfig) => {
+            const updated = setCodexModelNameInConfig(
+              previousConfig,
+              changedModel,
+            );
+            debouncedValidate(updated);
+            return updated;
+          });
+        }
+
+        return models;
+      });
+    },
+    [setCodexCatalogModels, setCodexConfig, debouncedValidate],
   );
 
   useEffect(() => {
@@ -1188,11 +1261,14 @@ function ProviderFormFull({
           category !== "official" && localCodexApiFormat === "openai_chat"
             ? normalizeCodexCatalogModelsForSave(codexCatalogModels)
             : [];
-        // Sync first catalog row's model into config.toml so Codex uses it as default
-        if (normalizedCatalogModels.length > 0) {
+        const defaultModel = resolveCodexDefaultModelForSave(
+          normalizedCodexConfig,
+          normalizedCatalogModels,
+        );
+        if (defaultModel) {
           normalizedCodexConfig = setCodexModelNameInConfig(
             normalizedCodexConfig,
-            normalizedCatalogModels[0].model,
+            defaultModel,
           );
         }
         const configObj = {
@@ -2037,7 +2113,7 @@ function ProviderFormFull({
               codexChatReasoning={codexChatReasoning}
               onCodexChatReasoningChange={setCodexChatReasoning}
               catalogModels={codexCatalogModels}
-              onCatalogModelsChange={setCodexCatalogModels}
+              onCatalogModelsChange={handleCodexCatalogModelsChange}
               speedTestEndpoints={speedTestEndpoints}
             />
           )}

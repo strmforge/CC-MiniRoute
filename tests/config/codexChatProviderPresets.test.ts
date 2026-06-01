@@ -117,14 +117,22 @@ const expectedChatPresets = new Map<
     "MiniMax",
     {
       baseUrl: "https://api.minimaxi.com/v1",
-      contextWindows: { "MiniMax-M2.7": 200000 },
+      contextWindows: {
+        "MiniMax-M3": 1000000,
+        "codex-MiniMax-M3": 1000000,
+        "MiniMax-M2.7": 200000,
+      },
     },
   ],
   [
     "MiniMax en",
     {
       baseUrl: "https://api.minimax.io/v1",
-      contextWindows: { "MiniMax-M2.7": 200000 },
+      contextWindows: {
+        "MiniMax-M3": 1000000,
+        "codex-MiniMax-M3": 1000000,
+        "MiniMax-M2.7": 200000,
+      },
     },
   ],
   [
