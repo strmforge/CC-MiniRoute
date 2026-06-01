@@ -111,8 +111,10 @@ fn handle_deeplink_url(
     focus_main_window: bool,
     source: &str,
 ) -> bool {
-    let scheme_prefix = format!("{}://", crate::config::DEEP_LINK_SCHEME);
-    if !url_str.starts_with(&scheme_prefix) {
+    let Some((scheme, _)) = url_str.split_once("://") else {
+        return false;
+    };
+    if !crate::config::is_supported_deep_link_scheme(scheme) {
         return false;
     }
 
@@ -1461,8 +1463,12 @@ pub fn run() {
                         let url_str = url.to_string();
                         log::info!("RunEvent::Opened with URL: {url_str}");
 
-                        let scheme_prefix = format!("{}://", crate::config::DEEP_LINK_SCHEME);
-                        if url_str.starts_with(&scheme_prefix) {
+                        if url_str
+                            .split_once("://")
+                            .is_some_and(|(scheme, _)| {
+                                crate::config::is_supported_deep_link_scheme(scheme)
+                            })
+                        {
                             if crate::lightweight::is_lightweight_mode() {
                                 if let Err(e) = crate::lightweight::exit_lightweight_mode(app_handle)
                                 {

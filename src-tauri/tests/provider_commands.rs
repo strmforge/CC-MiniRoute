@@ -1,7 +1,7 @@
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
-use cc_switch_lib::{
+use cc_miniroute_lib::{
     get_codex_auth_path, get_codex_config_path, import_default_config_test_hook, read_json_file,
     switch_provider_test_hook, write_codex_live_atomic, AppError, AppType, McpApps, McpServer,
     MultiAppConfig, Provider, ProviderService,
@@ -14,8 +14,11 @@ use support::{
     create_test_state, create_test_state_with_config, ensure_test_home, reset_test_fs, test_mutex,
 };
 
+const APP_CONFIG_DIR_NAME: &str = ".cc-miniroute";
+const APP_DATABASE_FILENAME: &str = "cc-miniroute.db";
+
 fn settings_path(home: &Path) -> PathBuf {
-    home.join(".cc-switch").join("settings.json")
+    home.join(APP_CONFIG_DIR_NAME).join("settings.json")
 }
 
 #[test]
@@ -414,7 +417,7 @@ fn switch_provider_updates_claude_live_and_state() {
     reset_test_fs();
     let _home = ensure_test_home();
 
-    let settings_path = cc_switch_lib::get_claude_settings_path();
+    let settings_path = cc_miniroute_lib::get_claude_settings_path();
     if let Some(parent) = settings_path.parent() {
         std::fs::create_dir_all(parent).expect("create claude settings dir");
     }
@@ -519,11 +522,11 @@ fn switch_provider_updates_claude_live_and_state() {
     // 验证数据已持久化到数据库
     let home_dir = std::env::var("HOME").expect("HOME should be set by ensure_test_home");
     let db_path = std::path::Path::new(&home_dir)
-        .join(".cc-switch")
-        .join("cc-switch.db");
+        .join(APP_CONFIG_DIR_NAME)
+        .join(APP_DATABASE_FILENAME);
     assert!(
         db_path.exists(),
-        "switching provider should persist to cc-switch.db"
+        "switching provider should persist to cc-miniroute.db"
     );
 
     // 验证当前供应商已更新

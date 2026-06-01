@@ -1,6 +1,6 @@
 use serde_json::json;
 
-use cc_switch_lib::{
+use cc_miniroute_lib::{
     get_claude_settings_path, read_json_file, write_codex_live_atomic, AppError, AppType, McpApps,
     McpServer, MultiAppConfig, Provider, ProviderMeta, ProviderService,
 };
@@ -178,15 +178,15 @@ command = "say"
         .expect("switch provider should succeed");
 
     let auth_value: serde_json::Value =
-        read_json_file(&cc_switch_lib::get_codex_auth_path()).expect("read auth.json");
+        read_json_file(&cc_miniroute_lib::get_codex_auth_path()).expect("read auth.json");
     assert_eq!(
         auth_value.get("OPENAI_API_KEY").and_then(|v| v.as_str()),
         Some("legacy-key"),
         "Codex provider switching should preserve the existing live auth.json"
     );
 
-    let config_text =
-        std::fs::read_to_string(cc_switch_lib::get_codex_config_path()).expect("read config.toml");
+    let config_text = std::fs::read_to_string(cc_miniroute_lib::get_codex_config_path())
+        .expect("read config.toml");
     assert!(
         config_text.contains("mcp_servers.echo-server"),
         "config.toml should contain synced MCP servers"
@@ -307,8 +307,8 @@ requires_openai_auth = true
     ProviderService::switch(&state, AppType::Codex, "new-provider")
         .expect("switch provider should succeed");
 
-    let config_text =
-        std::fs::read_to_string(cc_switch_lib::get_codex_config_path()).expect("read config.toml");
+    let config_text = std::fs::read_to_string(cc_miniroute_lib::get_codex_config_path())
+        .expect("read config.toml");
     let parsed: toml::Value = toml::from_str(&config_text).expect("parse config.toml");
 
     assert_eq!(
@@ -444,7 +444,7 @@ requires_openai_auth = true
         .expect("switch to bridge provider should succeed");
 
     let auth_value: serde_json::Value =
-        read_json_file(&cc_switch_lib::get_codex_auth_path()).expect("read auth.json");
+        read_json_file(&cc_miniroute_lib::get_codex_auth_path()).expect("read auth.json");
     assert_eq!(
         auth_value.get("auth_mode").and_then(|v| v.as_str()),
         Some("chatgpt")
@@ -463,8 +463,8 @@ requires_openai_auth = true
         "existing ChatGPT OAuth token should be preserved"
     );
 
-    let live_config =
-        std::fs::read_to_string(cc_switch_lib::get_codex_config_path()).expect("read config.toml");
+    let live_config = std::fs::read_to_string(cc_miniroute_lib::get_codex_config_path())
+        .expect("read config.toml");
     let parsed_live: toml::Value = toml::from_str(&live_config).expect("parse live config");
     assert_eq!(
         parsed_live
@@ -581,7 +581,7 @@ requires_openai_auth = true
         .expect("switch to official provider should succeed without API key");
 
     let auth_value: serde_json::Value =
-        read_json_file(&cc_switch_lib::get_codex_auth_path()).expect("read auth.json");
+        read_json_file(&cc_miniroute_lib::get_codex_auth_path()).expect("read auth.json");
     assert_eq!(
         auth_value.get("auth_mode").and_then(|v| v.as_str()),
         Some("chatgpt")
@@ -600,8 +600,8 @@ requires_openai_auth = true
         "official provider should preserve the existing ChatGPT OAuth token"
     );
 
-    let live_config =
-        std::fs::read_to_string(cc_switch_lib::get_codex_config_path()).expect("read config.toml");
+    let live_config = std::fs::read_to_string(cc_miniroute_lib::get_codex_config_path())
+        .expect("read config.toml");
     assert!(
         !live_config.contains("experimental_bearer_token"),
         "official login provider has no API key to inject"
@@ -679,7 +679,7 @@ fn provider_service_switch_codex_official_accounts_write_auth_json() {
     ProviderService::switch(&state, AppType::Codex, "official-b")
         .expect("switch to official account B should write auth.json");
     let auth_b: serde_json::Value =
-        read_json_file(&cc_switch_lib::get_codex_auth_path()).expect("read auth B");
+        read_json_file(&cc_miniroute_lib::get_codex_auth_path()).expect("read auth B");
     assert_eq!(
         auth_b
             .pointer("/tokens/access_token")
@@ -691,7 +691,7 @@ fn provider_service_switch_codex_official_accounts_write_auth_json() {
     ProviderService::switch(&state, AppType::Codex, "official-a")
         .expect("switch back to official account A should use backfilled live auth");
     let auth_a: serde_json::Value =
-        read_json_file(&cc_switch_lib::get_codex_auth_path()).expect("read auth A");
+        read_json_file(&cc_miniroute_lib::get_codex_auth_path()).expect("read auth A");
     assert_eq!(
         auth_a
             .pointer("/tokens/access_token")

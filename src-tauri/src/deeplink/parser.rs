@@ -19,7 +19,7 @@ pub fn parse_deeplink_url(url_str: &str) -> Result<DeepLinkImportRequest, AppErr
 
     // Validate scheme
     let scheme = url.scheme();
-    if scheme != crate::config::DEEP_LINK_SCHEME {
+    if !crate::config::is_supported_deep_link_scheme(scheme) {
         return Err(AppError::InvalidInput(format!(
             "Invalid scheme: expected '{}', got '{scheme}'",
             crate::config::DEEP_LINK_SCHEME

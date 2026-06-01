@@ -3,7 +3,7 @@ use std::fs;
 
 use serde_json::json;
 
-use cc_switch_lib::{
+use cc_miniroute_lib::{
     get_claude_mcp_path, get_claude_settings_path, import_default_config_test_hook, AppError,
     AppType, McpApps, McpServer, McpService, MultiAppConfig,
 };
@@ -13,6 +13,9 @@ mod support;
 use support::{
     create_test_state, create_test_state_with_config, ensure_test_home, reset_test_fs, test_mutex,
 };
+
+const APP_CONFIG_DIR_NAME: &str = ".cc-miniroute";
+const APP_DATABASE_FILENAME: &str = "cc-miniroute.db";
 
 #[test]
 fn import_default_config_claude_persists_provider() {
@@ -60,10 +63,10 @@ fn import_default_config_claude_persists_provider() {
     );
 
     // 验证数据已持久化到数据库（v3.7.0+ 使用 SQLite 而非 config.json）
-    let db_path = home.join(".cc-switch").join("cc-switch.db");
+    let db_path = home.join(APP_CONFIG_DIR_NAME).join(APP_DATABASE_FILENAME);
     assert!(
         db_path.exists(),
-        "importing default config should persist to cc-switch.db"
+        "importing default config should persist to cc-miniroute.db"
     );
 }
 
@@ -143,10 +146,10 @@ fn import_mcp_from_claude_creates_config_and_enables_servers() {
     );
 
     // 验证数据已持久化到数据库
-    let db_path = home.join(".cc-switch").join("cc-switch.db");
+    let db_path = home.join(APP_CONFIG_DIR_NAME).join(APP_DATABASE_FILENAME);
     assert!(
         db_path.exists(),
-        "state.save should persist to cc-switch.db when changes detected"
+        "state.save should persist to cc-miniroute.db when changes detected"
     );
 }
 
@@ -343,7 +346,7 @@ fn set_mcp_enabled_for_codex_writes_live_config() {
         "server should have Codex app enabled after toggle"
     );
 
-    let toml_path = cc_switch_lib::get_codex_config_path();
+    let toml_path = cc_miniroute_lib::get_codex_config_path();
     assert!(
         toml_path.exists(),
         "enabling server should trigger sync to ~/.codex/config.toml"

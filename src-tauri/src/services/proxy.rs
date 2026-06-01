@@ -2469,7 +2469,7 @@ mod tests {
         let mut live_config = provider.settings_config.clone();
         ProxyService::apply_claude_takeover_fields_for_provider(
             &mut live_config,
-            "http://127.0.0.1:15721",
+            "http://127.0.0.1:15731",
             &provider,
         );
 
@@ -2524,7 +2524,7 @@ mod tests {
         });
         ProxyService::apply_claude_takeover_fields_for_provider(
             &mut live_config,
-            "http://127.0.0.1:15721",
+            "http://127.0.0.1:15731",
             &provider,
         );
 
@@ -2599,7 +2599,7 @@ mod tests {
         });
         ProxyService::apply_claude_takeover_fields_for_provider(
             &mut live_config,
-            "http://127.0.0.1:15721",
+            "http://127.0.0.1:15731",
             &provider,
         );
 
@@ -2639,7 +2639,7 @@ mod tests {
             }
         });
 
-        ProxyService::apply_claude_takeover_fields(&mut live_config, "http://127.0.0.1:15721");
+        ProxyService::apply_claude_takeover_fields(&mut live_config, "http://127.0.0.1:15731");
 
         assert_eq!(
             live_config
@@ -2710,7 +2710,7 @@ model = "gpt-5-codex"
 
 [model_providers.rightcode]
 name = "RightCode"
-base_url = "http://127.0.0.1:15721/v1"
+base_url = "http://127.0.0.1:15731/v1"
 wire_api = "responses"
 "#
         });
@@ -3196,7 +3196,7 @@ model = "gpt-5.1-codex"
         service
             .write_claude_live(&json!({
                 "env": {
-                    "ANTHROPIC_BASE_URL": "http://127.0.0.1:15721",
+                    "ANTHROPIC_BASE_URL": "http://127.0.0.1:15731",
                     "ANTHROPIC_API_KEY": PROXY_TOKEN_PLACEHOLDER,
                     "ANTHROPIC_MODEL": "stale-model",
                     "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME": "Stale Sonnet"
@@ -3227,7 +3227,7 @@ model = "gpt-5.1-codex"
             live.get("env")
                 .and_then(|env| env.get("ANTHROPIC_BASE_URL"))
                 .and_then(|v| v.as_str()),
-            Some("http://127.0.0.1:15721"),
+            Some("http://127.0.0.1:15731"),
             "takeover proxy URL should remain active"
         );
         assert!(
@@ -3733,7 +3733,7 @@ model = "gpt-5.4"
 
 [model_providers.rightcode]
 name = "RightCode"
-base_url = "http://127.0.0.1:15721/v1"
+base_url = "http://127.0.0.1:15731/v1"
 wire_api = "responses"
 requires_openai_auth = true
 "#
@@ -3878,7 +3878,7 @@ model = "responses-model"
 
 [model_providers.stable]
 name = "Stable"
-base_url = "http://127.0.0.1:15721/v1"
+base_url = "http://127.0.0.1:15731/v1"
 wire_api = "responses"
 requires_openai_auth = true
 "#

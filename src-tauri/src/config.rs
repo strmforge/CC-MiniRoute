@@ -12,6 +12,11 @@ pub const APP_DATABASE_FILENAME: &str = "cc-miniroute.db";
 pub const APP_LOG_BASENAME: &str = "cc-miniroute";
 pub const DEFAULT_PROXY_PORT: u16 = 15731;
 pub const DEEP_LINK_SCHEME: &str = "ccminiroute";
+pub const LEGACY_DEEP_LINK_SCHEMES: &[&str] = &["ccswitch"];
+
+pub fn is_supported_deep_link_scheme(scheme: &str) -> bool {
+    scheme == DEEP_LINK_SCHEME || LEGACY_DEEP_LINK_SCHEMES.contains(&scheme)
+}
 
 /// 获取用户主目录，带回退和日志
 ///

@@ -200,12 +200,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
   );
   const [showInstallCommands, setShowInstallCommands] = useState(false);
 
-  const {
-    hasUpdate,
-    updateInfo,
-    checkUpdate,
-    isChecking,
-  } = useUpdate();
+  const { hasUpdate, updateInfo, checkUpdate, isChecking } = useUpdate();
 
   const [wslShellByTool, setWslShellByTool] = useState<
     Record<string, WslShellPreference>
