@@ -176,6 +176,37 @@ export function useSettings(): UseSettingsResult {
     [t],
   );
 
+  const syncCodexBridgeIfChanged = useCallback(
+    async (
+      nextEnabled: boolean | undefined,
+      prevEnabled: boolean | undefined,
+      alreadySynced: boolean,
+    ): Promise<boolean> => {
+      if (
+        nextEnabled === undefined ||
+        nextEnabled === (prevEnabled ?? false) ||
+        alreadySynced
+      ) {
+        return false;
+      }
+
+      const syncResult = await syncCurrentProvidersLiveSafe();
+      if (!syncResult.ok) {
+        console.warn(
+          "[useSettings] Failed to sync providers after toggling Codex bridge",
+          syncResult.error,
+        );
+        toast.error(
+          t("notifications.syncCodexBridgeFailed", {
+            defaultValue: "同步 Codex 模型桥接失败",
+          }),
+        );
+      }
+      return true;
+    },
+    [t],
+  );
+
   // 即时保存设置（用于 General 标签页的实时更新）
   // 保存基础配置 + 独立的系统 API 调用（开机自启）
   const autoSaveSettings = useCallback(
@@ -211,6 +242,9 @@ export function useSettings(): UseSettingsResult {
         const prevPluginEnabled = queryClient.getQueryData<Settings>([
           "settings",
         ])?.enableClaudePluginIntegration;
+        const prevCodexBridgeEnabled = queryClient.getQueryData<Settings>([
+          "settings",
+        ])?.enableCodexNonGptBridge;
 
         // 保存到配置文件
         await saveMutation.mutateAsync(payload);
@@ -262,9 +296,15 @@ export function useSettings(): UseSettingsResult {
           }
         }
 
-        await syncClaudePluginIfChanged(
+        const pluginSynced = await syncClaudePluginIfChanged(
           payload.enableClaudePluginIntegration,
           prevPluginEnabled,
+        );
+
+        await syncCodexBridgeIfChanged(
+          payload.enableCodexNonGptBridge,
+          prevCodexBridgeEnabled,
+          pluginSynced,
         );
 
         // 持久化语言偏好
@@ -298,7 +338,15 @@ export function useSettings(): UseSettingsResult {
         throw error;
       }
     },
-    [data, queryClient, saveMutation, settings, syncClaudePluginIfChanged, t],
+    [
+      data,
+      queryClient,
+      saveMutation,
+      settings,
+      syncClaudePluginIfChanged,
+      syncCodexBridgeIfChanged,
+      t,
+    ],
   );
 
   // 完整保存设置（用于 Advanced 标签页的手动保存）
@@ -345,6 +393,9 @@ export function useSettings(): UseSettingsResult {
         const prevPluginEnabled = queryClient.getQueryData<Settings>([
           "settings",
         ])?.enableClaudePluginIntegration;
+        const prevCodexBridgeEnabled = queryClient.getQueryData<Settings>([
+          "settings",
+        ])?.enableCodexNonGptBridge;
 
         await saveMutation.mutateAsync(payload);
 
@@ -398,6 +449,11 @@ export function useSettings(): UseSettingsResult {
           payload.enableClaudePluginIntegration,
           prevPluginEnabled,
         );
+        const codexBridgeSynced = await syncCodexBridgeIfChanged(
+          payload.enableCodexNonGptBridge,
+          prevCodexBridgeEnabled,
+          pluginSynced,
+        );
 
         try {
           if (typeof window !== "undefined" && payload.language) {
@@ -425,6 +481,7 @@ export function useSettings(): UseSettingsResult {
         const openclawDirChanged = sanitizedOpenclawDir !== previousOpenclawDir;
         if (
           !pluginSynced &&
+          !codexBridgeSynced &&
           (claudeDirChanged ||
             codexDirChanged ||
             geminiDirChanged ||
@@ -473,6 +530,7 @@ export function useSettings(): UseSettingsResult {
       settings,
       setRequiresRestart,
       syncClaudePluginIfChanged,
+      syncCodexBridgeIfChanged,
       t,
     ],
   );

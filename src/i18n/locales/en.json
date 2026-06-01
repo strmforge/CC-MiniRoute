@@ -261,7 +261,8 @@
     "backfillWarning": "Switched successfully, but failed to save changes back to the previous provider",
     "windowControlFailed": "Window control failed: {{error}}",
     "officialBlockedByProxy": "Cannot switch to official provider while local routing is active. Using routing with official APIs may cause account bans.",
-    "proxyOfficialWarning": "Current provider {{name}} is official. Consider switching to a third-party provider before using local routing."
+    "proxyOfficialWarning": "Current provider {{name}} is official. Consider switching to a third-party provider before using local routing.",
+    "syncCodexBridgeFailed": "Failed to sync Codex model bridge"
   },
   "confirm": {
     "deleteProvider": "Delete Provider",
@@ -326,7 +327,9 @@
         "enableFailoverToggle": "Show Failover Toggle on Main Page",
         "enableFailoverToggleDescription": "When enabled, the failover toggle will appear independently at the top of the main page",
         "running": "Running",
-        "stopped": "Stopped"
+        "stopped": "Stopped",
+        "enableCodexNonGptBridge": "Codex non-GPT model bridge",
+        "enableCodexNonGptBridgeDescription": "When enabled, MiniRoute writes non-GPT models such as MiniMax and DeepSeek into the Codex model catalog. Use failover for GPT-compatible providers."
       },
       "modelTest": {
         "title": "Model Test Config",
@@ -1131,7 +1134,7 @@
     "modelMetadataAdvanced": "Model Metadata Advanced Options",
     "modelMetadataAdvancedHint": "Overrides Codex metadata for unknown models; clearing a field removes the matching config.toml entry.",
     "modelMappingTitle": "Model Mapping",
-    "modelMappingHint": "Generates Codex model_catalog_json so /model can show these third-party model names; entries are saved exactly as listed. Codex must be restarted to refresh the model list after changes.",
+    "modelMappingHint": "Only when Codex non-GPT model bridge is enabled will MiniRoute generate Codex model_catalog_json so /model can show these non-GPT model names. Entries are saved exactly as listed; Codex may need a restart to refresh the model list.",
     "addCatalogModel": "Add Model",
     "catalogDisplayName": "Display Name",
     "catalogDisplayNamePlaceholder": "e.g., DeepSeek V4 Flash",

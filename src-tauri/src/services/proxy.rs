@@ -2011,6 +2011,13 @@ impl ProxyService {
         live_config: &mut Value,
         provider: Option<&Provider>,
     ) {
+        if !crate::settings::get_settings().enable_codex_non_gpt_bridge {
+            if let Some(root) = live_config.as_object_mut() {
+                root.remove("modelCatalog");
+            }
+            return;
+        }
+
         let model_catalog = self
             .combined_codex_model_catalog(provider)
             .unwrap_or_else(|| json!({ "models": [] }));
@@ -2055,12 +2062,12 @@ impl ProxyService {
                     continue;
                 };
 
-                if seen.insert(model_id.to_ascii_lowercase()) {
-                    models.push(model.clone());
+                if crate::codex_config::is_codex_openai_family_model(model_id) {
+                    continue;
                 }
 
-                if crate::codex_config::is_codex_openai_family_model(model_id) {
-                    Self::append_codex_openai_family_models(seen, models);
+                if seen.insert(model_id.to_ascii_lowercase()) {
+                    models.push(model.clone());
                 }
             }
         }
@@ -2069,25 +2076,11 @@ impl ProxyService {
             .map(|model| model.trim().to_string())
             .filter(|model| !model.is_empty())
         {
-            if crate::codex_config::is_codex_openai_family_model(&model_id) {
-                Self::append_codex_openai_family_models(seen, models);
-            } else if seen.insert(model_id.to_ascii_lowercase()) {
+            if !crate::codex_config::is_codex_openai_family_model(&model_id)
+                && seen.insert(model_id.to_ascii_lowercase())
+            {
                 models.push(Self::codex_simplified_catalog_entry(
                     &model_id, &model_id, 128_000,
-                ));
-            }
-        }
-    }
-
-    fn append_codex_openai_family_models(seen: &mut HashSet<String>, models: &mut Vec<Value>) {
-        for model_id in crate::codex_config::CODEX_OPENAI_MODEL_SLUGS {
-            if seen.insert(model_id.to_ascii_lowercase()) {
-                models.push(Self::codex_simplified_catalog_entry(
-                    model_id,
-                    crate::codex_config::codex_openai_model_display_name(model_id)
-                        .unwrap_or(model_id),
-                    crate::codex_config::codex_openai_model_context_window(model_id)
-                        .unwrap_or(272_000),
                 ));
             }
         }
@@ -2655,6 +2648,69 @@ mod tests {
                 .is_none(),
             "non-managed providers should retain the legacy fallback behavior"
         );
+    }
+
+    #[test]
+    #[serial]
+    fn codex_catalog_attachment_respects_bridge_toggle_and_skips_gpt_models() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let service = ProxyService::new(db);
+        let provider = Provider::with_id(
+            "mixed".to_string(),
+            "Mixed".to_string(),
+            json!({
+                "auth": {
+                    "OPENAI_API_KEY": "key"
+                },
+                "config": r#"model_provider = "custom"
+model = "gpt-5.5"
+
+[model_providers.custom]
+name = "custom"
+base_url = "https://example.com/v1"
+wire_api = "responses"
+requires_openai_auth = true
+"#,
+                "modelCatalog": {
+                    "models": [
+                        { "model": "gpt-5.5", "displayName": "GPT-5.5" },
+                        { "model": "MiniMax-M3", "displayName": "MiniMax M3", "contextWindow": 1000000 }
+                    ]
+                }
+            }),
+            None,
+        );
+
+        let mut live_config = json!({
+            "modelCatalog": {
+                "models": [{ "model": "stale-model" }]
+            }
+        });
+        service.attach_codex_model_catalog_for_miniroute(&mut live_config, Some(&provider));
+        assert!(
+            live_config.get("modelCatalog").is_none(),
+            "disabled bridge should remove MiniRoute's generated catalog projection"
+        );
+
+        let mut settings = crate::settings::get_settings();
+        settings.enable_codex_non_gpt_bridge = true;
+        crate::settings::update_settings(settings).expect("enable bridge");
+
+        service.attach_codex_model_catalog_for_miniroute(&mut live_config, Some(&provider));
+        let models = live_config
+            .get("modelCatalog")
+            .and_then(|catalog| catalog.get("models"))
+            .and_then(|models| models.as_array())
+            .expect("models");
+        let model_ids: Vec<_> = models
+            .iter()
+            .filter_map(crate::codex_config::codex_model_catalog_entry_id)
+            .collect();
+
+        assert_eq!(model_ids, vec!["MiniMax-M3"]);
     }
 
     #[test]

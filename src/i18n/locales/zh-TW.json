@@ -261,7 +261,8 @@
     "backfillWarning": "切換成功，但舊供應商設定回填失敗，您手動修改的設定可能未儲存",
     "windowControlFailed": "視窗控制失敗：{{error}}",
     "officialBlockedByProxy": "本地路由模式下不能切換至官方供應商，使用路由存取官方 API 可能導致帳號被封鎖",
-    "proxyOfficialWarning": "目前供應商 {{name}} 是官方供應商，建議切換至第三方供應商後再使用本地路由"
+    "proxyOfficialWarning": "目前供應商 {{name}} 是官方供應商，建議切換至第三方供應商後再使用本地路由",
+    "syncCodexBridgeFailed": "同步 Codex 模型橋接失敗"
   },
   "confirm": {
     "deleteProvider": "刪除供應商",
@@ -326,7 +327,9 @@
         "enableFailoverToggle": "在主頁面顯示故障轉移開關",
         "enableFailoverToggleDescription": "開啟後，主頁面頂部將獨立顯示故障轉移開關",
         "running": "執行中",
-        "stopped": "已停止"
+        "stopped": "已停止",
+        "enableCodexNonGptBridge": "Codex 非 GPT 模型橋接",
+        "enableCodexNonGptBridgeDescription": "開啟後，MiniRoute 會把 MiniMax、DeepSeek 等非 GPT 模型寫入 Codex 模型目錄；GPT-compatible 供應商請使用故障轉移。"
       },
       "modelTest": {
         "title": "模型測試設定",
@@ -1091,7 +1094,8 @@
     "modelNamePlaceholder": "例如: gpt-5-codex",
     "contextWindow1M": "1M 上下文視窗",
     "autoCompactLimit": "壓縮閾值",
-    "autoCompactLimitHint": "上下文 token 數達到此閾值時自動壓縮歷史"
+    "autoCompactLimitHint": "上下文 token 數達到此閾值時自動壓縮歷史",
+    "modelMappingHint": "開啟\"Codex 非 GPT 模型橋接\"後才會生成 Codex model_catalog_json，讓 /model 指令顯示這些非 GPT 模型名；表中條目按填寫內容原樣保存。修改後可能需要重啟 Codex 才能刷新模型列表。"
   },
   "geminiConfig": {
     "envFile": "環境變數 (.env)",

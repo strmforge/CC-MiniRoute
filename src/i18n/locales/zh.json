@@ -261,7 +261,8 @@
     "backfillWarning": "切换成功，但旧供应商配置回填失败，您手动修改的配置可能未保存",
     "windowControlFailed": "窗口控制失败：{{error}}",
     "officialBlockedByProxy": "本地路由模式下不能切换到官方供应商，使用路由访问官方 API 可能导致账号被封禁",
-    "proxyOfficialWarning": "当前供应商 {{name}} 是官方供应商，建议切换到第三方供应商后再使用本地路由"
+    "proxyOfficialWarning": "当前供应商 {{name}} 是官方供应商，建议切换到第三方供应商后再使用本地路由",
+    "syncCodexBridgeFailed": "同步 Codex 模型桥接失败"
   },
   "confirm": {
     "deleteProvider": "删除供应商",
@@ -326,7 +327,9 @@
         "enableFailoverToggle": "在主页面显示故障转移开关",
         "enableFailoverToggleDescription": "开启后，主页面顶部将独立显示故障转移开关",
         "running": "运行中",
-        "stopped": "已停止"
+        "stopped": "已停止",
+        "enableCodexNonGptBridge": "Codex 非 GPT 模型桥接",
+        "enableCodexNonGptBridgeDescription": "开启后，MiniRoute 会把 MiniMax、DeepSeek 等非 GPT 模型写入 Codex 模型目录；GPT-compatible 供应商请使用故障转移。"
       },
       "modelTest": {
         "title": "模型测试配置",
@@ -1131,7 +1134,7 @@
     "modelMetadataAdvanced": "模型元数据高级选项",
     "modelMetadataAdvancedHint": "用于未知模型的 Codex 元数据覆盖；清空字段会从 config.toml 删除对应配置。",
     "modelMappingTitle": "模型映射",
-    "modelMappingHint": "生成 Codex model_catalog_json，让 /model 命令显示这些第三方模型名；表中条目按填写内容原样保存。修改后需要重启 Codex 才能刷新模型列表。",
+    "modelMappingHint": "开启\"Codex 非 GPT 模型桥接\"后才会生成 Codex model_catalog_json，让 /model 命令显示这些非 GPT 模型名；表中条目按填写内容原样保存。修改后可能需要重启 Codex 才能刷新模型列表。",
     "addCatalogModel": "添加模型",
     "catalogDisplayName": "显示名称",
     "catalogDisplayNamePlaceholder": "例如: DeepSeek V4 Flash",

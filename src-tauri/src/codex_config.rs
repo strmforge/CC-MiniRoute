@@ -405,6 +405,10 @@ struct CodexCatalogModelSpec {
     context_window: u64,
 }
 
+fn codex_non_gpt_bridge_enabled() -> bool {
+    crate::settings::get_settings().enable_codex_non_gpt_bridge
+}
+
 fn codex_catalog_model_specs(settings: &Value, config_text: &str) -> Vec<CodexCatalogModelSpec> {
     let Some(models) = settings
         .get("modelCatalog")
@@ -428,6 +432,10 @@ fn codex_catalog_model_specs(settings: &Value, config_text: &str) -> Vec<CodexCa
             continue;
         }
 
+        if is_codex_openai_family_model(model) {
+            continue;
+        }
+
         let display_name = codex_model_catalog_entry_display_name(model_config, model);
         let context_window =
             codex_model_catalog_entry_context_window(model_config, model, default_context_window);
@@ -437,21 +445,6 @@ fn codex_catalog_model_specs(settings: &Value, config_text: &str) -> Vec<CodexCa
             display_name: display_name.to_string(),
             context_window,
         });
-
-        if is_codex_openai_family_model(model) {
-            for openai_model in CODEX_OPENAI_MODEL_SLUGS {
-                if seen.insert((*openai_model).to_string()) {
-                    specs.push(CodexCatalogModelSpec {
-                        model: (*openai_model).to_string(),
-                        display_name: codex_openai_model_display_name(openai_model)
-                            .unwrap_or(openai_model)
-                            .to_string(),
-                        context_window: codex_openai_model_context_window(openai_model)
-                            .unwrap_or(context_window),
-                    });
-                }
-            }
-        }
     }
 
     specs
@@ -723,6 +716,10 @@ fn codex_model_catalog_from_settings(
     settings: &Value,
     config_text: &str,
 ) -> Result<Option<Value>, AppError> {
+    if !codex_non_gpt_bridge_enabled() {
+        return Ok(None);
+    }
+
     let specs = codex_catalog_model_specs(settings, config_text);
     if specs.is_empty() {
         return Ok(None);
@@ -1855,11 +1852,12 @@ base_url = "https://production.api/v1"
     }
 
     #[test]
-    fn model_catalog_specs_expand_openai_family_models() {
+    fn model_catalog_specs_skip_openai_family_models() {
         let settings = json!({
             "modelCatalog": {
                 "models": [
-                    { "model": "gpt-5.5", "displayName": "GPT-5.5" }
+                    { "model": "gpt-5.5", "displayName": "GPT-5.5" },
+                    { "model": "MiniMax-M3", "displayName": "MiniMax M3" }
                 ]
             }
         });
@@ -1867,20 +1865,7 @@ base_url = "https://production.api/v1"
         let specs = codex_catalog_model_specs(&settings, "");
         let models: Vec<_> = specs.iter().map(|spec| spec.model.as_str()).collect();
 
-        assert_eq!(
-            models,
-            vec![
-                "gpt-5.5",
-                "gpt-5.4",
-                "gpt-5.4-mini",
-                "gpt-5.3-codex",
-                "gpt-5.2"
-            ]
-        );
-        assert!(
-            specs.iter().all(|spec| spec.context_window == 272_000),
-            "OpenAI family entries should use the Codex catalog context window"
-        );
+        assert_eq!(models, vec!["MiniMax-M3"]);
     }
 
     #[test]

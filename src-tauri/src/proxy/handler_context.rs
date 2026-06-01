@@ -309,6 +309,12 @@ async fn prefer_codex_provider_for_model(
     if request_model.is_empty() || request_model == "unknown" {
         return false;
     }
+    if !crate::settings::get_settings().enable_codex_non_gpt_bridge {
+        return false;
+    }
+    if crate::codex_config::is_codex_openai_family_model(request_model) {
+        return false;
+    }
 
     let mut match_index = providers
         .iter()
@@ -381,9 +387,101 @@ pub(crate) fn extract_gemini_model_from_path(endpoint: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_gemini_model_from_path, provider_catalog_contains_model};
+    use super::{
+        extract_gemini_model_from_path, prefer_codex_provider_for_model,
+        provider_catalog_contains_model,
+    };
+    use crate::app_config::AppType;
+    use crate::database::Database;
     use crate::provider::Provider;
+    use crate::proxy::{
+        failover_switch::FailoverSwitchManager,
+        provider_router::ProviderRouter,
+        providers::{codex_chat_history::CodexChatHistoryStore, gemini_shadow::GeminiShadowStore},
+        server::ProxyState,
+        types::{ProxyConfig, ProxyStatus},
+    };
     use serde_json::json;
+    use serial_test::serial;
+    use std::{collections::HashMap, env, sync::Arc};
+    use tempfile::TempDir;
+    use tokio::sync::RwLock;
+
+    struct TempHome {
+        _dir: TempDir,
+        original_home: Option<String>,
+        original_userprofile: Option<String>,
+        original_test_home: Option<String>,
+    }
+
+    impl TempHome {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().expect("temp home");
+            let original_home = env::var("HOME").ok();
+            let original_userprofile = env::var("USERPROFILE").ok();
+            let original_test_home = env::var("CC_SWITCH_TEST_HOME").ok();
+
+            env::set_var("HOME", dir.path());
+            env::set_var("USERPROFILE", dir.path());
+            env::set_var("CC_SWITCH_TEST_HOME", dir.path());
+            crate::settings::reload_settings().expect("reload settings");
+
+            Self {
+                _dir: dir,
+                original_home,
+                original_userprofile,
+                original_test_home,
+            }
+        }
+    }
+
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            match &self.original_home {
+                Some(value) => env::set_var("HOME", value),
+                None => env::remove_var("HOME"),
+            }
+            match &self.original_userprofile {
+                Some(value) => env::set_var("USERPROFILE", value),
+                None => env::remove_var("USERPROFILE"),
+            }
+            match &self.original_test_home {
+                Some(value) => env::set_var("CC_SWITCH_TEST_HOME", value),
+                None => env::remove_var("CC_SWITCH_TEST_HOME"),
+            }
+            crate::settings::reload_settings().expect("reload settings");
+        }
+    }
+
+    fn build_state(db: Arc<Database>) -> ProxyState {
+        ProxyState {
+            db: db.clone(),
+            config: Arc::new(RwLock::new(ProxyConfig::default())),
+            status: Arc::new(RwLock::new(ProxyStatus::default())),
+            start_time: Arc::new(RwLock::new(None)),
+            current_providers: Arc::new(RwLock::new(HashMap::new())),
+            provider_router: Arc::new(ProviderRouter::new(db.clone())),
+            gemini_shadow: Arc::new(GeminiShadowStore::default()),
+            codex_chat_history: Arc::new(CodexChatHistoryStore::default()),
+            app_handle: None,
+            failover_manager: Arc::new(FailoverSwitchManager::new(db)),
+        }
+    }
+
+    fn codex_provider_with_catalog(id: &str, model: &str) -> Provider {
+        Provider::with_id(
+            id.to_string(),
+            id.to_string(),
+            json!({
+                "modelCatalog": {
+                    "models": [
+                        { "model": model, "displayName": model }
+                    ]
+                }
+            }),
+            None,
+        )
+    }
 
     #[test]
     fn extract_model_with_action() {
@@ -504,5 +602,58 @@ base_url = "http://127.0.0.1:15721/v1"
         assert!(provider_catalog_contains_model(&provider, "gpt-5.4"));
         assert!(provider_catalog_contains_model(&provider, "gpt-5.3-codex"));
         assert!(!provider_catalog_contains_model(&provider, "MiniMax-M3"));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn codex_model_route_override_requires_bridge_and_non_gpt_model() {
+        let _home = TempHome::new();
+        let state = build_state(Arc::new(Database::memory().expect("init db")));
+        let app_type = AppType::Codex;
+
+        let gpt_provider = codex_provider_with_catalog("gpt-provider", "gpt-5.5");
+        let minimax_provider = codex_provider_with_catalog("minimax-provider", "MiniMax-M3");
+
+        let mut providers = vec![gpt_provider.clone(), minimax_provider.clone()];
+        assert!(
+            !prefer_codex_provider_for_model(
+                &state,
+                &app_type,
+                "codex",
+                "MiniMax-M3",
+                &mut providers,
+            )
+            .await
+        );
+        assert_eq!(providers[0].id, "gpt-provider");
+
+        let mut settings = crate::settings::get_settings();
+        settings.enable_codex_non_gpt_bridge = true;
+        crate::settings::update_settings(settings).expect("enable bridge");
+
+        assert!(
+            prefer_codex_provider_for_model(
+                &state,
+                &app_type,
+                "codex",
+                "MiniMax-M3",
+                &mut providers,
+            )
+            .await
+        );
+        assert_eq!(providers[0].id, "minimax-provider");
+
+        let mut providers = vec![minimax_provider, gpt_provider];
+        assert!(
+            !prefer_codex_provider_for_model(
+                &state,
+                &app_type,
+                "codex",
+                "gpt-5.5",
+                &mut providers,
+            )
+            .await
+        );
+        assert_eq!(providers[0].id, "minimax-provider");
     }
 }
