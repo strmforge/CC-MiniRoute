@@ -1494,18 +1494,20 @@ function App() {
                         </motion.div>
                       </AnimatePresence>
                     </div>
-
-                    <Button
-                      onClick={() => setIsAddOpen(true)}
-                      size="icon"
-                      className={`ml-2 ${addActionButtonClass}`}
-                    >
-                      <Plus className="w-5 h-5" />
-                    </Button>
                   </>
                 )}
               </div>
             </div>
+            {currentView === "providers" && (
+              <Button
+                onClick={() => setIsAddOpen(true)}
+                size="icon"
+                className={`shrink-0 ${addActionButtonClass}`}
+                style={{ WebkitAppRegion: "no-drag" } as any}
+              >
+                <Plus className="w-5 h-5" />
+              </Button>
+            )}
           </div>
         </div>
       </header>
