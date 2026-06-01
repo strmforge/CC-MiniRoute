@@ -1861,6 +1861,27 @@ impl ProxyService {
             }
         }
 
+        if matches!(app_type_enum, AppType::Codex) && !live_taken_over {
+            let effective_settings = build_effective_settings_with_common_config(
+                self.db.as_ref(),
+                &AppType::Codex,
+                &provider,
+            )
+            .map_err(|e| format!("构建 Codex 有效配置失败: {e}"))?;
+            let auth = effective_settings
+                .get("auth")
+                .ok_or_else(|| "Codex 供应商缺少 auth 配置".to_string())?;
+            let config_str = effective_settings.get("config").and_then(|v| v.as_str());
+
+            crate::codex_config::write_codex_provider_live_with_catalog(
+                &effective_settings,
+                provider.category.as_deref(),
+                auth,
+                config_str,
+            )
+            .map_err(|e| format!("写入 Codex 配置失败: {e}"))?;
+        }
+
         if let Some(server) = self.server.read().await.as_ref() {
             server
                 .set_active_target(app_type_enum.as_str(), &provider.id, &provider.name)
