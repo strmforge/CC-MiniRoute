@@ -18,9 +18,24 @@ pub const CC_SWITCH_CODEX_MODEL_PROVIDER_ID: &str = "custom";
 /// provider is routed through CC Switch.  A dedicated id is an ownership
 /// marker: unlike a generic localhost `base_url`, it can be detected and
 /// cleaned up without mistaking a user's own local provider for takeover.
-pub const CC_SWITCH_CODEX_OFFICIAL_PROXY_PROVIDER_ID: &str = "cc-switch-official";
-pub const CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME: &str = "cc-switch-model-catalog.json";
+pub const CC_SWITCH_CODEX_OFFICIAL_PROXY_PROVIDER_ID: &str = "cc-miniroute-official";
+pub const MINIROUTE_CODEX_MODEL_CATALOG_FILENAME: &str = "cc-miniroute-model-catalog.json";
 const CODEX_PROXY_AUTH_PLACEHOLDER: &str = "PROXY_MANAGED";
+
+/// Models in this family stay on the currently selected Codex provider and its
+/// normal failover chain. The multi-provider bridge only claims exact non-GPT
+/// model ids declared by another provider.
+pub(crate) fn is_codex_openai_family_model(model: &str) -> bool {
+    model.trim().to_ascii_lowercase().starts_with("gpt-")
+}
+
+pub(crate) fn codex_model_catalog_entry_id(entry: &Value) -> Option<&str> {
+    ["model", "slug", "id", "name"]
+        .into_iter()
+        .filter_map(|field| entry.get(field).and_then(Value::as_str))
+        .map(str::trim)
+        .find(|model| !model.is_empty())
+}
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -32,6 +47,8 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 // CODEX_HOME and seed different model templates.
 #[cfg(not(test))]
 static CODEX_MODEL_CATALOG_TEMPLATE_CACHE: OnceCell<Value> = OnceCell::new();
+#[cfg(not(test))]
+static CODEX_GPT_CATALOG_ENTRIES_CACHE: OnceCell<Vec<Value>> = OnceCell::new();
 
 /// Top-level `config.toml` key that controls Codex's built-in web-search tool.
 pub(crate) const CODEX_WEB_SEARCH_FIELD: &str = "web_search";
@@ -186,7 +203,7 @@ pub fn get_codex_config_path() -> PathBuf {
 }
 
 pub fn get_codex_model_catalog_path() -> PathBuf {
-    get_codex_config_dir().join(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)
+    get_codex_config_dir().join(MINIROUTE_CODEX_MODEL_CATALOG_FILENAME)
 }
 
 /// 获取 Codex 供应商配置文件路径
@@ -573,6 +590,25 @@ fn codex_catalog_model_entry(
     entry_obj.insert("availability_nux".to_string(), Value::Null);
     entry_obj.insert("upgrade".to_string(), Value::Null);
 
+    if let Some(default_reasoning_level) = spec.default_reasoning_level.as_deref() {
+        entry_obj.insert(
+            "default_reasoning_level".to_string(),
+            json!(default_reasoning_level),
+        );
+    }
+    if let Some(supported_reasoning_levels) = spec.supported_reasoning_levels.as_deref() {
+        entry_obj.insert(
+            "supported_reasoning_levels".to_string(),
+            json!(supported_reasoning_levels
+                .iter()
+                .map(|level| json!({
+                    "effort": level.effort,
+                    "description": level.description,
+                }))
+                .collect::<Vec<_>>()),
+        );
+    }
+
     // Image support is a model capability, not a tool-profile capability.
     // Trust hidden preset metadata first, then the confirmed text-only registry;
     // every unknown model fails open so GPT/relay aliases are never declared
@@ -639,12 +675,22 @@ struct CodexCatalogModelSpec {
     /// When omitted, all catalog profiles consult the shared text-only model
     /// registry and otherwise default to `["text", "image"]`.
     input_modalities: Option<Vec<String>>,
+    /// Per-model reasoning capabilities mirrored from an official vendor
+    /// catalog. Unknown models inherit the conservative native template.
+    default_reasoning_level: Option<String>,
+    supported_reasoning_levels: Option<Vec<CodexCatalogReasoningLevelSpec>>,
     /// Per-row override for the native template's `base_instructions` (the
     /// model identity / system preamble). Carries each vendor's OFFICIAL value
     /// (e.g. MiMo "developed by Xiaomi", MiniMax "based on MiniMax-M3"); falls
     /// back to the template default when absent. Only consulted for
     /// `NativeResponses`.
     base_instructions: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CodexCatalogReasoningLevelSpec {
+    effort: String,
+    description: String,
 }
 
 fn codex_catalog_model_specs(settings: &Value) -> Vec<CodexCatalogModelSpec> {
@@ -703,6 +749,40 @@ fn codex_catalog_model_specs(settings: &Value) -> Vec<CodexCatalogModelSpec> {
             })
             .filter(|items| !items.is_empty());
 
+        let default_reasoning_level = model_config
+            .get("defaultReasoningLevel")
+            .or_else(|| model_config.get("default_reasoning_level"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let supported_reasoning_levels = model_config
+            .get("supportedReasoningLevels")
+            .or_else(|| model_config.get("supported_reasoning_levels"))
+            .and_then(Value::as_array)
+            .map(|levels| {
+                levels
+                    .iter()
+                    .filter_map(|level| {
+                        let effort = level.get("effort")?.as_str()?.trim();
+                        if effort.is_empty() {
+                            return None;
+                        }
+                        let description = level
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .unwrap_or(effort);
+                        Some(CodexCatalogReasoningLevelSpec {
+                            effort: effort.to_string(),
+                            description: description.to_string(),
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .filter(|levels| !levels.is_empty());
+
         let base_instructions = model_config
             .get("baseInstructions")
             .or_else(|| model_config.get("base_instructions"))
@@ -717,11 +797,107 @@ fn codex_catalog_model_specs(settings: &Value) -> Vec<CodexCatalogModelSpec> {
             context_window,
             supports_parallel_tool_calls,
             input_modalities,
+            default_reasoning_level,
+            supported_reasoning_levels,
             base_instructions,
         });
     }
 
     specs
+}
+
+/// Build a single external catalog from multiple Codex provider settings.
+/// Each provider keeps its own tool profile, because native Responses, Chat
+/// conversion, and Anthropic conversion expose different safe tool surfaces.
+/// The caller is responsible for resolving duplicate model ownership before
+/// passing entries here; duplicate slugs are intentionally omitted rather than
+/// allowing Codex to choose an arbitrary catalog row.
+pub fn codex_model_catalog_from_provider_catalogs(
+    catalogs: Vec<(&Value, &str, CodexCatalogToolProfile)>,
+) -> Result<Option<Value>, AppError> {
+    let mut entries = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for (settings, config_text, profile) in catalogs {
+        let specs = codex_catalog_model_specs(settings);
+        if specs.is_empty() {
+            continue;
+        }
+
+        let default_context_window =
+            extract_codex_top_level_u64(config_text, "model_context_window").unwrap_or(128_000);
+
+        if let Some(vendor_models) = codex_official_vendor_catalog_models(config_text, profile) {
+            for spec in specs {
+                if seen.insert(spec.model.to_ascii_lowercase()) {
+                    let priority = entries.len();
+                    entries.push(codex_vendor_catalog_model_entry(
+                        &vendor_models,
+                        &spec,
+                        priority,
+                    ));
+                }
+            }
+            continue;
+        }
+
+        let template = match profile {
+            CodexCatalogToolProfile::NativeResponses | CodexCatalogToolProfile::Anthropic => {
+                load_codex_native_responses_template()
+            }
+            CodexCatalogToolProfile::ProxyChat => load_codex_model_catalog_template()?,
+        };
+
+        for spec in specs {
+            if seen.insert(spec.model.to_ascii_lowercase()) {
+                let priority = entries.len();
+                entries.push(codex_catalog_model_entry(
+                    &template,
+                    &spec,
+                    priority,
+                    profile,
+                    default_context_window,
+                ));
+            }
+        }
+    }
+
+    Ok((!entries.is_empty()).then(|| json!({ "models": entries })))
+}
+
+/// Combine Codex's complete built-in GPT rows with provider-specific aliases
+/// and non-GPT rows. Official GPT metadata wins for matching ids so reasoning
+/// levels and speed tiers cannot be replaced by a relay's synthetic one-row
+/// catalog; relay-only GPT aliases are still retained.
+pub fn codex_model_catalog_with_default_gpt_entries(catalog: &Value) -> Result<Value, AppError> {
+    let official_gpt_entries = load_codex_gpt_catalog_entries()?;
+    merge_codex_catalog_with_gpt_entries(catalog, official_gpt_entries)
+}
+
+fn merge_codex_catalog_with_gpt_entries(
+    catalog: &Value,
+    official_gpt_entries: Vec<Value>,
+) -> Result<Value, AppError> {
+    let Some(models) = catalog.get("models").and_then(Value::as_array) else {
+        return Err(AppError::Message(
+            "Codex model catalog has no models array".into(),
+        ));
+    };
+    let mut merged = official_gpt_entries;
+    let mut seen = merged
+        .iter()
+        .filter_map(codex_model_catalog_entry_id)
+        .map(|id| id.to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+    for entry in models {
+        let Some(id) = codex_model_catalog_entry_id(entry) else {
+            continue;
+        };
+        if seen.insert(id.to_ascii_lowercase()) {
+            merged.push(entry.clone());
+        }
+    }
+    Ok(json!({ "models": merged }))
 }
 
 fn find_codex_model_template(catalog: &Value) -> Option<Value> {
@@ -735,6 +911,76 @@ fn find_codex_model_template(catalog: &Value) -> Option<Value> {
             })
         })
         .cloned()
+}
+
+fn load_codex_gpt_catalog_entries() -> Result<Vec<Value>, AppError> {
+    #[cfg(not(test))]
+    {
+        return CODEX_GPT_CATALOG_ENTRIES_CACHE
+            .get_or_try_init(load_codex_gpt_catalog_entries_uncached)
+            .cloned();
+    }
+    #[cfg(test)]
+    load_codex_gpt_catalog_entries_uncached()
+}
+
+fn codex_gpt_entries_from_catalog(catalog: &Value) -> Vec<Value> {
+    catalog
+        .get("models")
+        .and_then(Value::as_array)
+        .map(|models| {
+            models
+                .iter()
+                .filter(|entry| {
+                    codex_model_catalog_entry_id(entry).is_some_and(is_codex_openai_family_model)
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn append_unique_catalog_entries(target: &mut Vec<Value>, source: impl IntoIterator<Item = Value>) {
+    let mut seen = target
+        .iter()
+        .filter_map(codex_model_catalog_entry_id)
+        .map(|id| id.to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+    for entry in source {
+        let Some(id) = codex_model_catalog_entry_id(&entry) else {
+            continue;
+        };
+        if seen.insert(id.to_ascii_lowercase()) {
+            target.push(entry);
+        }
+    }
+}
+
+fn load_codex_gpt_catalog_entries_uncached() -> Result<Vec<Value>, AppError> {
+    // The running Codex CLI is authoritative for capability metadata and its
+    // full visible GPT list. A cache can be stale or have been rewritten by a
+    // different Codex build, so it contributes only ids absent from bundled.
+    let mut entries = load_codex_bundled_catalog()?
+        .as_ref()
+        .map(codex_gpt_entries_from_catalog)
+        .unwrap_or_default();
+
+    let path = get_codex_config_dir().join("models_cache.json");
+    if path.exists() {
+        let text = fs::read_to_string(&path).map_err(|e| AppError::io(&path, e))?;
+        let catalog: Value = serde_json::from_str(&text).map_err(|e| AppError::json(&path, e))?;
+        append_unique_catalog_entries(&mut entries, codex_gpt_entries_from_catalog(&catalog));
+    }
+    if !entries.is_empty() {
+        for entry in &mut entries {
+            fill_template_fields_from_static(entry);
+        }
+        return Ok(entries);
+    }
+
+    // Static fallback is deliberately minimal. Normal Codex installations use
+    // models_cache.json and therefore keep their complete built-in GPT list.
+    Ok(load_codex_model_template_static().into_iter().collect())
 }
 
 fn load_codex_model_template_from_cache() -> Result<Option<Value>, AppError> {
@@ -848,6 +1094,10 @@ fn push_home_codex_cli_candidates(
 }
 
 fn push_env_codex_cli_candidates(candidates: &mut Vec<PathBuf>, seen: &mut HashSet<String>) {
+    if let Some(codex_cli_path) = std::env::var_os("CODEX_CLI_PATH") {
+        push_existing_codex_cli_candidate(candidates, seen, PathBuf::from(codex_cli_path));
+    }
+
     for (env_key, suffix) in [
         ("NPM_CONFIG_PREFIX", &["bin", "codex"][..]),
         ("VOLTA_HOME", &["bin", "codex"][..]),
@@ -885,6 +1135,16 @@ fn push_env_codex_cli_candidates(candidates: &mut Vec<PathBuf>, seen: &mut HashS
 
     #[cfg(windows)]
     {
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+            let desktop_bin = PathBuf::from(local_app_data).join("OpenAI/Codex/bin");
+            push_existing_codex_cli_candidate(candidates, seen, desktop_bin.join("codex.exe"));
+            push_codex_cli_candidates_from_version_dirs(
+                candidates,
+                seen,
+                desktop_bin,
+                &["codex.exe"],
+            );
+        }
         if let Some(appdata) = std::env::var_os("APPDATA") {
             let npm_dir = PathBuf::from(appdata).join("npm");
             for name in ["codex.cmd", "codex.exe", "codex"] {
@@ -898,12 +1158,18 @@ fn codex_cli_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     let mut seen = HashSet::new();
 
+    // Prefer the exact Desktop/plugin binary over an older npm CLI on PATH.
+    push_env_codex_cli_candidates(&mut candidates, &mut seen);
+    push_existing_codex_cli_candidate(
+        &mut candidates,
+        &mut seen,
+        get_home_dir().join(".codex/plugins/.plugin-appserver/codex.exe"),
+    );
+    push_home_codex_cli_candidates(&mut candidates, &mut seen, &get_home_dir());
+
     for candidate in CODEX_CLI_FIXED_CANDIDATES {
         push_codex_cli_candidate(&mut candidates, &mut seen, PathBuf::from(candidate));
     }
-
-    push_env_codex_cli_candidates(&mut candidates, &mut seen);
-    push_home_codex_cli_candidates(&mut candidates, &mut seen, &get_home_dir());
 
     candidates
 }
@@ -926,7 +1192,7 @@ fn codex_bundled_models_command(candidate: &Path) -> Command {
     command
 }
 
-fn load_codex_model_template_from_bundled() -> Result<Option<Value>, AppError> {
+fn load_codex_bundled_catalog() -> Result<Option<Value>, AppError> {
     for candidate in codex_cli_candidates() {
         let candidate_label = candidate.to_string_lossy();
         let output = match codex_bundled_models_command(&candidate).output() {
@@ -952,12 +1218,18 @@ fn load_codex_model_template_from_bundled() -> Result<Option<Value>, AppError> {
                 continue;
             }
         };
-        if let Some(template) = find_codex_model_template(&catalog) {
-            return Ok(Some(template));
+        if catalog.get("models").and_then(Value::as_array).is_some() {
+            return Ok(Some(catalog));
         }
     }
 
     Ok(None)
+}
+
+fn load_codex_model_template_from_bundled() -> Result<Option<Value>, AppError> {
+    Ok(load_codex_bundled_catalog()?
+        .as_ref()
+        .and_then(find_codex_model_template))
 }
 
 fn load_codex_model_template_static() -> Option<Value> {
@@ -1083,6 +1355,24 @@ fn codex_vendor_catalog_model_entry(
     }
     if let Some(modalities) = spec.input_modalities.as_deref() {
         entry_obj.insert("input_modalities".to_string(), json!(modalities));
+    }
+    if let Some(default_reasoning_level) = spec.default_reasoning_level.as_deref() {
+        entry_obj.insert(
+            "default_reasoning_level".to_string(),
+            json!(default_reasoning_level),
+        );
+    }
+    if let Some(levels) = spec.supported_reasoning_levels.as_deref() {
+        entry_obj.insert(
+            "supported_reasoning_levels".to_string(),
+            json!(levels
+                .iter()
+                .map(|level| json!({
+                    "effort": level.effort,
+                    "description": level.description,
+                }))
+                .collect::<Vec<_>>()),
+        );
     }
     if let Some(base_instructions) = spec
         .base_instructions
@@ -1257,12 +1547,12 @@ fn set_codex_model_catalog_json_field(
                 .and_then(|item| item.as_str())
                 .map(|path| {
                     Path::new(path).file_name().and_then(|name| name.to_str())
-                        == Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)
+                        == Some(MINIROUTE_CODEX_MODEL_CATALOG_FILENAME)
                 })
                 .unwrap_or(true);
             if is_cc_switch_owned {
                 doc["model_catalog_json"] =
-                    toml_edit::value(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME);
+                    toml_edit::value(MINIROUTE_CODEX_MODEL_CATALOG_FILENAME);
             }
         }
         None => {
@@ -1271,7 +1561,7 @@ fn set_codex_model_catalog_json_field(
                 .and_then(|item| item.as_str())
                 .map(|path| {
                     Path::new(path).file_name().and_then(|name| name.to_str())
-                        == Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)
+                        == Some(MINIROUTE_CODEX_MODEL_CATALOG_FILENAME)
                 })
                 .unwrap_or(false);
             if should_remove {
@@ -1281,6 +1571,60 @@ fn set_codex_model_catalog_json_field(
     }
 
     Ok(doc.to_string())
+}
+
+fn ensure_codex_catalog_pointer_available(config_text: &str) -> Result<(), AppError> {
+    let doc = config_text
+        .parse::<DocumentMut>()
+        .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))?;
+    let Some(path) = doc
+        .get("model_catalog_json")
+        .and_then(|item| item.as_str())
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+    else {
+        return Ok(());
+    };
+
+    let owned = Path::new(path).file_name().and_then(|name| name.to_str())
+        == Some(MINIROUTE_CODEX_MODEL_CATALOG_FILENAME);
+    if owned {
+        Ok(())
+    } else {
+        Err(AppError::Message(format!(
+            "Codex model_catalog_json already points to a user-managed catalog: {path}"
+        )))
+    }
+}
+
+/// Install a catalog whose rows have already been generated with per-provider
+/// tool profiles. This must not pass through the simplified `modelCatalog`
+/// projection again, otherwise native/Anthropic capability rows are lost.
+pub fn prepare_codex_config_text_with_prebuilt_catalog(
+    catalog: &Value,
+    config_text: &str,
+) -> Result<String, AppError> {
+    let models = catalog
+        .get("models")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            AppError::Message("Codex prebuilt model catalog has no models array".into())
+        })?;
+    if models.is_empty() {
+        return Err(AppError::Message(
+            "Codex multi-provider bridge produced an empty model catalog".into(),
+        ));
+    }
+
+    ensure_codex_catalog_pointer_available(config_text)?;
+    let catalog_path = get_codex_model_catalog_path();
+    let config_text = set_codex_model_catalog_json_field(config_text, Some(&catalog_path))?;
+    // The selector is global while tool compatibility is per upstream. Until
+    // request-time hosted-tool filtering exists, the compatible common surface
+    // is to disable Codex's global web_search tool in bridge mode.
+    let config_text = set_codex_native_web_search_field(&config_text, true)?;
+    write_json_file(&catalog_path, catalog)?;
+    Ok(config_text)
 }
 
 /// Pure toggle for the top-level `web_search` field that turns Codex's built-in
@@ -1352,13 +1696,13 @@ pub fn prepare_codex_config_text_with_model_catalog(
 }
 
 /// Reverse of `prepare_codex_config_text_with_model_catalog`: read the
-/// cc-switch–maintained catalog file referenced by `~/.codex/config.toml` and
+/// MiniRoute-maintained catalog file referenced by `~/.codex/config.toml` and
 /// convert it back into the simplified shape the frontend table uses:
 /// `{ "models": [{ "model", "displayName"?, "contextWindow"?, hidden overrides... }, ...] }`.
 ///
 /// We only reverse-parse catalogs whose `model_catalog_json` path is the
-/// cc-switch–generated file (identified by filename
-/// `cc-switch-model-catalog.json`). A user-managed external catalog file is
+/// MiniRoute-generated file (identified by filename
+/// `cc-miniroute-model-catalog.json`). A user-managed external catalog file is
 /// left alone — surfacing its richer structure as the simplified table would
 /// be a downgrade we can't safely round-trip.
 ///
@@ -1416,12 +1760,12 @@ pub(crate) fn read_limited_string(path: &Path, max_bytes: u64) -> Result<String,
     fs::read_to_string(path).map_err(|error| AppError::io(path, error))
 }
 
-/// Read the cc-switch Codex model catalog file with a size cap.
+/// Read the MiniRoute Codex model catalog file with a size cap.
 pub(crate) fn read_codex_model_catalog_text(path: &Path) -> Result<String, AppError> {
     read_limited_string(path, MAX_CODEX_CATALOG_BYTES)
 }
 
-/// Given `config.toml` text, resolve the on-disk path of the cc-switch–owned
+/// Given `config.toml` text, resolve the on-disk path of the MiniRoute-owned
 /// catalog file (returns `None` if `model_catalog_json` is absent or points at
 /// a file we don't own). Relative paths are resolved under `base_dir`;
 /// absolute paths must still be inside `base_dir`.
@@ -1441,7 +1785,7 @@ pub(crate) fn resolve_cc_switch_catalog_path(
 
     let referenced_path = Path::new(catalog_path_str);
     let is_cc_switch_owned = referenced_path.file_name().and_then(|name| name.to_str())
-        == Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME);
+        == Some(MINIROUTE_CODEX_MODEL_CATALOG_FILENAME);
     if !is_cc_switch_owned {
         return None;
     }
@@ -1468,7 +1812,7 @@ pub(crate) fn resolve_cc_switch_catalog_path(
     }
 
     // 词法包含不等于运行时包含：配置目录内的符号链接（如 ~/.codex/link ->
-    // /etc）能让 `link/cc-switch-model-catalog.json` 通过上面的检查，读取却
+    // /etc）能让 `link/cc-miniroute-model-catalog.json` 通过上面的检查，读取却
     // 落到目录外。文件存在时把真实路径 canonicalize 出来再校验一次，并把
     // canonical 路径返回给调用方——后续读取不再经过 symlink 组件。
     if resolved.exists() {
@@ -1559,6 +1903,41 @@ fn build_simplified_catalog_from_texts(config_text: &str, catalog_text: &str) ->
             let inferred = codex_catalog_input_modalities(model, None);
             if !mods.is_empty() && mods != inferred {
                 obj.insert("inputModalities".to_string(), json!(mods));
+            }
+        }
+        if let Some(default_reasoning_level) = entry
+            .get("default_reasoning_level")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            obj.insert(
+                "defaultReasoningLevel".to_string(),
+                json!(default_reasoning_level),
+            );
+        }
+        if let Some(levels) = entry
+            .get("supported_reasoning_levels")
+            .and_then(Value::as_array)
+        {
+            let levels = levels
+                .iter()
+                .filter_map(|level| {
+                    let effort = level.get("effort")?.as_str()?.trim();
+                    if effort.is_empty() {
+                        return None;
+                    }
+                    let description = level
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or(effort);
+                    Some(json!({ "effort": effort, "description": description }))
+                })
+                .collect::<Vec<_>>();
+            if !levels.is_empty() {
+                obj.insert("supportedReasoningLevels".to_string(), json!(levels));
             }
         }
 
@@ -1850,7 +2229,7 @@ pub fn apply_codex_official_proxy_route(
         }
     };
 
-    // Clean only CC Switch's placeholder from every stale provider table. Real
+    // Clean only MiniRoute's placeholder from every stale provider table. Real
     // user bearer tokens are preserved, as are all unrelated provider fields.
     remove_codex_proxy_placeholders_from_providers(&mut providers);
 
@@ -2377,6 +2756,76 @@ mod tests {
     }
 
     #[test]
+    fn prebuilt_catalog_refuses_to_replace_user_owned_pointer() {
+        let catalog = json!({ "models": [{ "slug": "deepseek-v4" }] });
+        let error = prepare_codex_config_text_with_prebuilt_catalog(
+            &catalog,
+            "model_catalog_json = \"my-catalog.json\"\n",
+        )
+        .expect_err("user-owned catalog must not be overwritten");
+        assert!(error.to_string().contains("user-managed catalog"));
+    }
+
+    #[test]
+    fn bridge_catalog_merges_all_official_gpt_models_and_keeps_relay_aliases() {
+        let input = json!({
+            "models": [
+                {
+                    "slug": "gpt-5.6-sol",
+                    "supported_reasoning_levels": [{ "effort": "high", "description": "High" }],
+                    "additional_speed_tiers": []
+                },
+                { "slug": "gpt-relay-alias" },
+                { "slug": "deepseek-v4" }
+            ]
+        });
+        let official = vec![
+            json!({
+                "slug": "gpt-5.6-sol",
+                "supported_reasoning_levels": [
+                    { "effort": "low", "description": "Low" },
+                    { "effort": "medium", "description": "Medium" },
+                    { "effort": "high", "description": "High" },
+                    { "effort": "xhigh", "description": "Extra high" },
+                    { "effort": "max", "description": "Maximum" },
+                    { "effort": "ultra", "description": "Ultra" }
+                ],
+                "additional_speed_tiers": ["fast"],
+                "service_tiers": [{ "id": "priority", "name": "Fast" }]
+            }),
+            json!({ "slug": "gpt-5.6-terra" }),
+            json!({ "slug": "gpt-5.6-luna" }),
+        ];
+        let output = merge_codex_catalog_with_gpt_entries(&input, official).expect("catalog");
+        let models = output["models"].as_array().expect("models");
+
+        assert_eq!(
+            models
+                .iter()
+                .filter_map(codex_model_catalog_entry_id)
+                .collect::<Vec<_>>(),
+            vec![
+                "gpt-5.6-sol",
+                "gpt-5.6-terra",
+                "gpt-5.6-luna",
+                "gpt-relay-alias",
+                "deepseek-v4"
+            ]
+        );
+        let sol = &models[0];
+        assert_eq!(
+            sol["supported_reasoning_levels"]
+                .as_array()
+                .expect("reasoning levels")
+                .len(),
+            6,
+            "official GPT reasoning levels must win over the relay's synthetic row"
+        );
+        assert_eq!(sol["additional_speed_tiers"], json!(["fast"]));
+        assert_eq!(sol["service_tiers"][0]["id"], json!("priority"));
+    }
+
+    #[test]
     fn unified_session_bucket_injects_for_empty_official_config() {
         let injected = inject_codex_unified_session_bucket("").expect("inject");
         let doc: toml::Table = toml::from_str(&injected).expect("parse injected config");
@@ -2411,7 +2860,7 @@ experimental_bearer_token = "PROXY_MANAGED"
 [mcp_servers.example]
 command = "example"
 "#;
-        let output = apply_codex_official_proxy_route(input, "http://127.0.0.1:15721/v1")
+        let output = apply_codex_official_proxy_route(input, "http://127.0.0.1:15731/v1")
             .expect("apply official proxy route");
         let doc: toml::Value = toml::from_str(&output).expect("parse output");
 
@@ -2428,7 +2877,7 @@ command = "example"
         let provider = &doc["model_providers"][CC_SWITCH_CODEX_OFFICIAL_PROXY_PROVIDER_ID];
         assert_eq!(
             provider.get("base_url").and_then(toml::Value::as_str),
-            Some("http://127.0.0.1:15721/v1")
+            Some("http://127.0.0.1:15731/v1")
         );
         assert_eq!(
             provider
@@ -2448,7 +2897,7 @@ command = "example"
     #[test]
     fn official_proxy_route_cleanup_only_removes_owned_provider() {
         let projected =
-            apply_codex_official_proxy_route("model = \"gpt-5.4\"\n", "http://127.0.0.1:15721/v1")
+            apply_codex_official_proxy_route("model = \"gpt-5.4\"\n", "http://127.0.0.1:15731/v1")
                 .expect("project");
         let cleaned = remove_codex_official_proxy_route(&projected).expect("clean");
         let doc: toml::Value = toml::from_str(&cleaned).expect("parse cleaned");
@@ -2466,7 +2915,7 @@ command = "example"
             "model_providers = 3\n",
             "[[model_providers]]\nname = \"broken\"\n",
         ] {
-            let result = apply_codex_official_proxy_route(input, "http://127.0.0.1:15721/v1");
+            let result = apply_codex_official_proxy_route(input, "http://127.0.0.1:15731/v1");
             assert!(result.is_err());
         }
     }
@@ -2476,7 +2925,7 @@ command = "example"
         let input = r#"model_provider = "rightcode"
 model_providers = { rightcode = { name = "RightCode", experimental_bearer_token = "PROXY_MANAGED" } }
 "#;
-        let projected = apply_codex_official_proxy_route(input, "http://127.0.0.1:15721/v1")
+        let projected = apply_codex_official_proxy_route(input, "http://127.0.0.1:15731/v1")
             .expect("project inline provider table");
         let projected_doc: toml::Value = toml::from_str(&projected).expect("parse projected");
         assert!(projected_doc["model_providers"]["rightcode"]
@@ -2497,7 +2946,7 @@ model_providers = { rightcode = { name = "RightCode", experimental_bearer_token 
 
     #[test]
     fn unified_session_bucket_preserves_other_keys_and_explicit_routing() {
-        let with_catalog = "model_catalog_json = \"cc-switch-model-catalog.json\"\n";
+        let with_catalog = "model_catalog_json = \"cc-miniroute-model-catalog.json\"\n";
         let injected = inject_codex_unified_session_bucket(with_catalog).expect("inject");
         assert!(injected.contains("model_catalog_json"));
         assert!(injected.contains("model_provider = \"custom\""));
@@ -2531,7 +2980,7 @@ base_url = "https://relay.example/v1"
         let stripped = strip_codex_unified_session_bucket(&injected).expect("strip");
         assert_eq!(stripped.trim(), "");
 
-        let with_catalog = "model_catalog_json = \"cc-switch-model-catalog.json\"\n";
+        let with_catalog = "model_catalog_json = \"cc-miniroute-model-catalog.json\"\n";
         let injected = inject_codex_unified_session_bucket(with_catalog).expect("inject");
         let stripped = strip_codex_unified_session_bucket(&injected).expect("strip");
         assert_eq!(stripped, with_catalog);
@@ -3224,6 +3673,8 @@ base_url = "https://production.api/v1"
             context_window: Some(262_144),
             supports_parallel_tool_calls: None,
             input_modalities: None,
+            default_reasoning_level: None,
+            supported_reasoning_levels: None,
             base_instructions: None,
         }];
         let catalog = codex_model_catalog_from_specs(
@@ -3359,6 +3810,11 @@ base_url = "https://production.api/v1"
                         "contextWindow": 1_000_000,
                         "supportsParallelToolCalls": true,
                         "inputModalities": ["text", "image"],
+                        "defaultReasoningLevel": "high",
+                        "supportedReasoningLevels": [
+                            { "effort": "none", "description": "Think-Off" },
+                            { "effort": "high", "description": "Deep" }
+                        ],
                         "baseInstructions": "You are Codex, a coding agent based on MiniMax-M3."
                     }
                 ]
@@ -3413,6 +3869,63 @@ base_url = "https://production.api/v1"
             entry.get("context_window").and_then(|v| v.as_u64()),
             Some(1_000_000)
         );
+        let efforts = entry["supported_reasoning_levels"]
+            .as_array()
+            .expect("reasoning levels")
+            .iter()
+            .filter_map(|level| level["effort"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(efforts, vec!["none", "high"]);
+        assert_eq!(entry["default_reasoning_level"], json!("high"));
+    }
+
+    #[test]
+    fn native_responses_reasoning_levels_are_per_model_and_unknown_stays_conservative() {
+        let settings = json!({
+            "modelCatalog": {
+                "models": [
+                    {
+                        "model": "MiniMax-M3",
+                        "defaultReasoningLevel": "high",
+                        "supportedReasoningLevels": [
+                            { "effort": "none", "description": "Think-Off" },
+                            { "effort": "high", "description": "Deep" }
+                        ]
+                    },
+                    {
+                        "model": "mimo-v2.5",
+                        "default_reasoning_level": "high",
+                        "supported_reasoning_levels": [
+                            { "effort": "none", "description": "Disable Thinking" },
+                            { "effort": "high", "description": "Enabled Thinking" }
+                        ]
+                    },
+                    { "model": "unknown-native-model" }
+                ]
+            }
+        });
+        let catalog = codex_model_catalog_from_settings(
+            &settings,
+            "",
+            CodexCatalogToolProfile::NativeResponses,
+        )
+        .expect("catalog generation")
+        .expect("catalog");
+        let models = catalog["models"].as_array().expect("models");
+        for entry in &models[..2] {
+            let efforts = entry["supported_reasoning_levels"]
+                .as_array()
+                .expect("reasoning levels")
+                .iter()
+                .filter_map(|level| level["effort"].as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(efforts, vec!["none", "high"]);
+        }
+        assert_eq!(
+            models[2]["supported_reasoning_levels"],
+            load_codex_native_responses_template()["supported_reasoning_levels"],
+            "unknown models keep the conservative native template"
+        );
     }
 
     #[test]
@@ -3430,6 +3943,8 @@ base_url = "https://production.api/v1"
                 context_window: Some(128_000),
                 supports_parallel_tool_calls: None,
                 input_modalities: None,
+                default_reasoning_level: None,
+                supported_reasoning_levels: None,
                 base_instructions: None,
             },
             CodexCatalogModelSpec {
@@ -3438,6 +3953,8 @@ base_url = "https://production.api/v1"
                 context_window: Some(128_000),
                 supports_parallel_tool_calls: None,
                 input_modalities: None,
+                default_reasoning_level: None,
+                supported_reasoning_levels: None,
                 base_instructions: None,
             },
             CodexCatalogModelSpec {
@@ -3446,6 +3963,8 @@ base_url = "https://production.api/v1"
                 context_window: Some(128_000),
                 supports_parallel_tool_calls: None,
                 input_modalities: None,
+                default_reasoning_level: None,
+                supported_reasoning_levels: None,
                 base_instructions: None,
             },
             CodexCatalogModelSpec {
@@ -3454,6 +3973,8 @@ base_url = "https://production.api/v1"
                 context_window: Some(128_000),
                 supports_parallel_tool_calls: None,
                 input_modalities: Some(vec!["text".to_string(), "image".to_string()]),
+                default_reasoning_level: None,
+                supported_reasoning_levels: None,
                 base_instructions: None,
             },
             CodexCatalogModelSpec {
@@ -3462,6 +3983,8 @@ base_url = "https://production.api/v1"
                 context_window: Some(128_000),
                 supports_parallel_tool_calls: None,
                 input_modalities: Some(vec!["text".to_string()]),
+                default_reasoning_level: None,
+                supported_reasoning_levels: None,
                 base_instructions: None,
             },
         ];
@@ -3732,6 +4255,8 @@ wire_api = "responses"
             context_window: Some(128_000),
             supports_parallel_tool_calls: None,
             input_modalities: None,
+            default_reasoning_level: None,
+            supported_reasoning_levels: None,
             base_instructions: None,
         }];
         // Using a gpt-5.5-shaped template under ProxyChat must NOT strip
@@ -3761,7 +4286,7 @@ wire_api = "responses"
 [model_providers.any]
 name = "any"
 "#;
-        let catalog_path = Path::new("/tmp/cc-switch-model-catalog.json");
+        let catalog_path = Path::new("/tmp/cc-miniroute-model-catalog.json");
 
         let result = set_codex_model_catalog_json_field(input, Some(catalog_path)).unwrap();
         let parsed: toml::Value = toml::from_str(&result).unwrap();
@@ -3769,7 +4294,7 @@ name = "any"
             parsed
                 .get("model_catalog_json")
                 .and_then(|value| value.as_str()),
-            Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)
+            Some(MINIROUTE_CODEX_MODEL_CATALOG_FILENAME)
         );
         assert!(
             parsed
@@ -3953,12 +4478,12 @@ web_search = "disabled"
     }
 
     #[test]
-    fn resolve_catalog_path_accepts_cc_switch_owned_file() {
+    fn resolve_catalog_path_accepts_miniroute_owned_file() {
         let base = PathBuf::from("/tmp/.codex");
-        let config = r#"model_catalog_json = "/tmp/.codex/cc-switch-model-catalog.json"
+        let config = r#"model_catalog_json = "/tmp/.codex/cc-miniroute-model-catalog.json"
 "#;
         let resolved = resolve_cc_switch_catalog_path(config, &base).expect("path resolves");
-        assert_eq!(resolved, base.join(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME));
+        assert_eq!(resolved, base.join(MINIROUTE_CODEX_MODEL_CATALOG_FILENAME));
     }
 
     #[test]
@@ -4074,6 +4599,29 @@ web_search = "disabled"
             models[3].get("inputModalities"),
             Some(&json!(["text", "image"])),
             "an explicit image override for a registered text-only model must round-trip"
+        );
+    }
+
+    #[test]
+    fn build_simplified_catalog_round_trips_reasoning_capabilities() {
+        let catalog = r#"{
+            "models": [{
+                "slug": "MiniMax-M3",
+                "default_reasoning_level": "high",
+                "supported_reasoning_levels": [
+                    { "effort": "none", "description": "Think-Off" },
+                    { "effort": "high", "description": "Deep" }
+                ]
+            }]
+        }"#;
+        let result = build_simplified_catalog_from_texts("", catalog).expect("entries");
+        assert_eq!(result["models"][0]["defaultReasoningLevel"], json!("high"));
+        assert_eq!(
+            result["models"][0]["supportedReasoningLevels"],
+            json!([
+                { "effort": "none", "description": "Think-Off" },
+                { "effort": "high", "description": "Deep" }
+            ])
         );
     }
 
@@ -4252,7 +4800,7 @@ model = "glm-5"
         // Simulate a WSL UNC path as cc-switch would see it on Windows;
         // the function now writes just the relative filename.
         let unc_path =
-            Path::new(r"\\wsl.localhost\Ubuntu\home\user\.codex\cc-switch-model-catalog.json");
+            Path::new(r"\\wsl.localhost\Ubuntu\home\user\.codex\cc-miniroute-model-catalog.json");
 
         let result = set_codex_model_catalog_json_field(input, Some(unc_path)).unwrap();
         let parsed: toml::Value = toml::from_str(&result).unwrap();
@@ -4262,7 +4810,7 @@ model = "glm-5"
             .and_then(|v| v.as_str())
             .expect("model_catalog_json should be set");
         assert_eq!(
-            written_path, CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME,
+            written_path, MINIROUTE_CODEX_MODEL_CATALOG_FILENAME,
             "should write only the relative filename, not the UNC path"
         );
     }
@@ -4272,14 +4820,14 @@ model = "glm-5"
         let input = r#"model_provider = "custom"
 model = "glm-5"
 "#;
-        let regular_path = Path::new("/home/user/.codex/cc-switch-model-catalog.json");
+        let regular_path = Path::new("/home/user/.codex/cc-miniroute-model-catalog.json");
 
         let result = set_codex_model_catalog_json_field(input, Some(regular_path)).unwrap();
         let parsed: toml::Value = toml::from_str(&result).unwrap();
 
         assert_eq!(
             parsed.get("model_catalog_json").and_then(|v| v.as_str()),
-            Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME),
+            Some(MINIROUTE_CODEX_MODEL_CATALOG_FILENAME),
             "should write only the relative filename, not the full path"
         );
     }
@@ -4288,7 +4836,7 @@ model = "glm-5"
     fn set_catalog_json_none_removes_cc_switch_owned_by_filename() {
         // After the WSL fix, TOML may contain a Linux-style path.
         // The None arm must still remove it (file_name match catches any format).
-        let input = r#"model_catalog_json = "/home/user/.codex/cc-switch-model-catalog.json"
+        let input = r#"model_catalog_json = "/home/user/.codex/cc-miniroute-model-catalog.json"
 "#;
         let result = set_codex_model_catalog_json_field(input, None).unwrap();
         let parsed: toml::Value = toml::from_str(&result).unwrap();
@@ -4321,7 +4869,7 @@ model = "glm-5"
 model = "glm-5"
 model_catalog_json = "/Users/me/.codex/my-custom-catalog.json"
 "#;
-        let catalog_path = Path::new("/tmp/cc-switch-model-catalog.json");
+        let catalog_path = Path::new("/tmp/cc-miniroute-model-catalog.json");
         let result = set_codex_model_catalog_json_field(input, Some(catalog_path)).unwrap();
         let parsed: toml::Value = toml::from_str(&result).unwrap();
         assert_eq!(
@@ -4339,7 +4887,7 @@ model_catalog_json = "/Users/me/.codex/my-custom-catalog.json"
 model = "glm-5"
 model_catalog_json = "my-custom-catalog.json"
 "#;
-        let catalog_path = Path::new("/tmp/cc-switch-model-catalog.json");
+        let catalog_path = Path::new("/tmp/cc-miniroute-model-catalog.json");
         let result = set_codex_model_catalog_json_field(input, Some(catalog_path)).unwrap();
         let parsed: toml::Value = toml::from_str(&result).unwrap();
         assert_eq!(
@@ -4352,20 +4900,20 @@ model_catalog_json = "my-custom-catalog.json"
     #[test]
     fn resolve_catalog_finds_relative_filename() {
         let config_text = r#"model_provider = "custom"
-model_catalog_json = "cc-switch-model-catalog.json"
+model_catalog_json = "cc-miniroute-model-catalog.json"
 "#;
         let base_dir = PathBuf::from("/home/user/.codex");
         let result = resolve_cc_switch_catalog_path(config_text, &base_dir);
         assert_eq!(
             result,
-            Some(base_dir.join(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)),
+            Some(base_dir.join(MINIROUTE_CODEX_MODEL_CATALOG_FILENAME)),
             "relative filename should resolve under base_dir for file I/O"
         );
     }
 
     #[test]
     fn resolve_catalog_rejects_absolute_path_outside_config_dir() {
-        let config_text = r#"model_catalog_json = "/tmp/secret/cc-switch-model-catalog.json"
+        let config_text = r#"model_catalog_json = "/tmp/secret/cc-miniroute-model-catalog.json"
 "#;
         let base_dir = PathBuf::from("/home/user/.codex");
         let result = resolve_cc_switch_catalog_path(config_text, &base_dir);
@@ -4377,20 +4925,20 @@ model_catalog_json = "cc-switch-model-catalog.json"
 
     #[test]
     fn resolve_catalog_accepts_absolute_path_inside_config_dir() {
-        let config_text = r#"model_catalog_json = "/home/user/.codex/cc-switch-model-catalog.json"
+        let config_text = r#"model_catalog_json = "/home/user/.codex/cc-miniroute-model-catalog.json"
 "#;
         let base_dir = PathBuf::from("/home/user/.codex");
         let result = resolve_cc_switch_catalog_path(config_text, &base_dir);
         assert_eq!(
             result,
-            Some(base_dir.join(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)),
+            Some(base_dir.join(MINIROUTE_CODEX_MODEL_CATALOG_FILENAME)),
             "absolute path inside ~/.codex should be accepted"
         );
     }
 
     #[test]
     fn resolve_catalog_rejects_traversal_to_parent_directory() {
-        let config_text = r#"model_catalog_json = "../cc-switch-model-catalog.json"
+        let config_text = r#"model_catalog_json = "../cc-miniroute-model-catalog.json"
 "#;
         let base_dir = PathBuf::from("/home/user/.codex");
         let result = resolve_cc_switch_catalog_path(config_text, &base_dir);
@@ -4403,22 +4951,28 @@ model_catalog_json = "cc-switch-model-catalog.json"
     #[test]
     fn resolve_catalog_rejects_symlink_escaping_config_dir() {
         // 词法包含可被符号链接绕过：~/.codex/link -> 外部目录，
-        // "link/cc-switch-model-catalog.json" 词法上在 base 内，真实读取却落到
+        // "link/cc-miniroute-model-catalog.json" 词法上在 base 内，真实读取却落到
         // base 外。canonicalize 之后的二次校验必须拒绝。
         let temp = tempfile::tempdir().expect("tempdir");
         let base_dir = temp.path().join("codex");
         let outside_dir = temp.path().join("outside");
         fs::create_dir_all(&base_dir).expect("create base");
         fs::create_dir_all(&outside_dir).expect("create outside");
-        let escaped_file = outside_dir.join(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME);
+        let escaped_file = outside_dir.join(MINIROUTE_CODEX_MODEL_CATALOG_FILENAME);
         fs::write(&escaped_file, r#"{"models":[]}"#).expect("write escaped catalog");
 
         #[cfg(unix)]
         std::os::unix::fs::symlink(&outside_dir, base_dir.join("link")).expect("symlink");
         #[cfg(windows)]
-        std::os::windows::fs::symlink_dir(&outside_dir, base_dir.join("link")).expect("symlink");
+        if let Err(error) = std::os::windows::fs::symlink_dir(&outside_dir, base_dir.join("link")) {
+            if error.raw_os_error() == Some(1314) {
+                eprintln!("skipping symlink test: Windows symlink privilege is unavailable");
+                return;
+            }
+            panic!("symlink: {error}");
+        }
 
-        let config_text = r#"model_catalog_json = "link/cc-switch-model-catalog.json"
+        let config_text = r#"model_catalog_json = "link/cc-miniroute-model-catalog.json"
 "#;
         let result = resolve_cc_switch_catalog_path(config_text, &base_dir);
         assert_eq!(
@@ -4433,16 +4987,16 @@ model_catalog_json = "cc-switch-model-catalog.json"
         let temp = tempfile::tempdir().expect("tempdir");
         let base_dir = temp.path().join("codex");
         fs::create_dir_all(&base_dir).expect("create base");
-        let catalog_file = base_dir.join(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME);
+        let catalog_file = base_dir.join(MINIROUTE_CODEX_MODEL_CATALOG_FILENAME);
         fs::write(&catalog_file, r#"{"models":[]}"#).expect("write catalog");
 
-        let config_text = r#"model_catalog_json = "cc-switch-model-catalog.json"
+        let config_text = r#"model_catalog_json = "cc-miniroute-model-catalog.json"
 "#;
         let result = resolve_cc_switch_catalog_path(config_text, &base_dir);
         let resolved = result.expect("real file inside config dir should be accepted");
         assert_eq!(
             resolved.file_name().and_then(|n| n.to_str()),
-            Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)
+            Some(MINIROUTE_CODEX_MODEL_CATALOG_FILENAME)
         );
     }
 

@@ -89,6 +89,11 @@ function modelCatalog(
         // defaults to text+image.
         supportsParallelToolCalls?: boolean;
         inputModalities?: string[];
+        defaultReasoningLevel?: string;
+        supportedReasoningLevels?: Array<{
+          effort: string;
+          description: string;
+        }>;
         // Vendor's OFFICIAL base_instructions; omit to inherit the neutral
         // template default. Required by Codex, so the backend always emits one.
         baseInstructions?: string;
@@ -104,6 +109,8 @@ function modelCatalog(
           contextWindow: entry.contextWindow,
           supportsParallelToolCalls: entry.supportsParallelToolCalls,
           inputModalities: entry.inputModalities,
+          defaultReasoningLevel: entry.defaultReasoningLevel,
+          supportedReasoningLevels: entry.supportedReasoningLevels,
           baseInstructions: entry.baseInstructions,
         },
   );
@@ -925,6 +932,7 @@ query_params = { "api-version" = "2025-04-01-preview" }
 wire_api = "responses"
 requires_openai_auth = true`,
     endpointCandidates: ["https://YOUR_RESOURCE_NAME.openai.azure.com/openai"],
+    apiFormat: "openai_responses",
     theme: {
       icon: "codex",
       backgroundColor: "#0078D4",
@@ -1256,6 +1264,11 @@ requires_openai_auth = true`,
         contextWindow: 1000000,
         supportsParallelToolCalls: true,
         inputModalities: ["text", "image"],
+        defaultReasoningLevel: "high",
+        supportedReasoningLevels: [
+          { effort: "none", description: "Think-Off" },
+          { effort: "high", description: "Deep" },
+        ],
         baseInstructions:
           "You are Codex, a coding agent based on MiniMax-M3. You and the user share the same workspace and collaborate to achieve the user's goals.",
       },
@@ -1291,6 +1304,11 @@ requires_openai_auth = true`,
         contextWindow: 1000000,
         supportsParallelToolCalls: true,
         inputModalities: ["text", "image"],
+        defaultReasoningLevel: "high",
+        supportedReasoningLevels: [
+          { effort: "none", description: "Think-Off" },
+          { effort: "high", description: "Deep" },
+        ],
         baseInstructions:
           "You are Codex, a coding agent based on MiniMax-M3. You and the user share the same workspace and collaborate to achieve the user's goals.",
       },
@@ -1346,6 +1364,11 @@ requires_openai_auth = true`,
         displayName: "MiMo V2.5 Pro",
         contextWindow: 1048576,
         inputModalities: ["text"],
+        defaultReasoningLevel: "high",
+        supportedReasoningLevels: [
+          { effort: "none", description: "Disable Thinking" },
+          { effort: "high", description: "Enabled Thinking" },
+        ],
         baseInstructions:
           "You are MiMo, an AI assistant developed by Xiaomi. Today's date: {date} {week}. Your knowledge cutoff date is December 2024.",
       },
@@ -1354,6 +1377,11 @@ requires_openai_auth = true`,
         displayName: "MiMo V2.5",
         contextWindow: 1048576,
         inputModalities: ["text", "image"],
+        defaultReasoningLevel: "high",
+        supportedReasoningLevels: [
+          { effort: "none", description: "Disable Thinking" },
+          { effort: "high", description: "Enabled Thinking" },
+        ],
         baseInstructions:
           "You are MiMo, an AI assistant developed by Xiaomi. Today's date: {date} {week}. Your knowledge cutoff date is December 2024.",
       },
@@ -1383,6 +1411,11 @@ requires_openai_auth = true`,
         displayName: "MiMo V2.5 Pro",
         contextWindow: 1048576,
         inputModalities: ["text"],
+        defaultReasoningLevel: "high",
+        supportedReasoningLevels: [
+          { effort: "none", description: "Disable Thinking" },
+          { effort: "high", description: "Enabled Thinking" },
+        ],
         baseInstructions:
           "You are MiMo, an AI assistant developed by Xiaomi. Today's date: {date} {week}. Your knowledge cutoff date is December 2024.",
       },
@@ -1391,6 +1424,11 @@ requires_openai_auth = true`,
         displayName: "MiMo V2.5",
         contextWindow: 1048576,
         inputModalities: ["text", "image"],
+        defaultReasoningLevel: "high",
+        supportedReasoningLevels: [
+          { effort: "none", description: "Disable Thinking" },
+          { effort: "high", description: "Enabled Thinking" },
+        ],
         baseInstructions:
           "You are MiMo, an AI assistant developed by Xiaomi. Today's date: {date} {week}. Your knowledge cutoff date is December 2024.",
       },
@@ -1694,5 +1732,29 @@ base_url = "https://cc-api.pipellm.ai/v1"`,
     category: "aggregator",
     icon: "ppio",
     iconColor: "#2874FF",
+  },
+  {
+    name: "JieKou AI",
+    websiteUrl: "https://jiekou.ai/#model-library",
+    apiKeyUrl: "https://jiekou.ai/settings/key-management",
+    auth: generateThirdPartyAuth(""),
+    config: generateThirdPartyConfig(
+      "jiekou",
+      "https://api.jiekou.ai/openai/v1",
+      "claude-fable-5",
+    ),
+    endpointCandidates: ["https://api.jiekou.ai/openai/v1"],
+    apiFormat: "openai_chat",
+    modelCatalog: modelCatalog([
+      {
+        model: "claude-fable-5",
+        displayName: "Claude Fable 5",
+        contextWindow: 1000000,
+        inputModalities: ["text", "image"],
+      },
+    ]),
+    category: "aggregator",
+    icon: "jiekou",
+    iconColor: "#000000",
   },
 ];

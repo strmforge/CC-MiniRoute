@@ -65,7 +65,6 @@ import { AddProviderDialog } from "@/components/providers/AddProviderDialog";
 import { EditProviderDialog } from "@/components/providers/EditProviderDialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { SettingsPage } from "@/components/settings/SettingsPage";
-import { UpdateBadge } from "@/components/UpdateBadge";
 import { EnvWarningBanner } from "@/components/env/EnvWarningBanner";
 import { ProxyToggle } from "@/components/proxy/ProxyToggle";
 import { ClaudeDesktopRouteToggle } from "@/components/proxy/ClaudeDesktopRouteToggle";
@@ -86,6 +85,7 @@ import { FirstRunNoticeDialog } from "@/components/FirstRunNoticeDialog";
 import { AgentsPanel } from "@/components/agents/AgentsPanel";
 import { UniversalProviderPanel } from "@/components/universal";
 import { McpIcon } from "@/components/BrandIcons";
+import { APP_NAME, REPOSITORY_URL } from "@/config/brand";
 import { Button } from "@/components/ui/button";
 import { SessionManagerPage } from "@/components/sessions/SessionManagerPage";
 import {
@@ -124,7 +124,7 @@ interface SyncStatusUpdatedPayload {
 const DEFAULT_DRAG_BAR_HEIGHT = isWindows() || isLinux() ? 0 : 28; // px
 const HEADER_HEIGHT = 64; // px
 
-const STORAGE_KEY = "cc-switch-last-app";
+const STORAGE_KEY = "cc-miniroute-last-app";
 const VALID_APPS: AppId[] = [
   "claude",
   "claude-desktop",
@@ -144,7 +144,7 @@ const getInitialApp = (): AppId => {
   return "claude";
 };
 
-const VIEW_STORAGE_KEY = "cc-switch-last-view";
+const VIEW_STORAGE_KEY = "cc-miniroute-last-view";
 const VALID_VIEWS: View[] = [
   "providers",
   "settings",
@@ -1226,7 +1226,7 @@ function App() {
               <div className="flex items-center gap-2">
                 <div className="relative inline-flex items-center">
                   <a
-                    href="https://ccswitch.io"
+                    href={REPOSITORY_URL}
                     target="_blank"
                     rel="noreferrer"
                     className={cn(
@@ -1236,7 +1236,7 @@ function App() {
                         : "text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300",
                     )}
                   >
-                    CC Switch
+                    {APP_NAME}
                   </a>
                 </div>
                 <Button
@@ -1251,12 +1251,6 @@ function App() {
                 >
                   <Settings className="w-4 h-4" />
                 </Button>
-                <UpdateBadge
-                  onClick={() => {
-                    setSettingsDefaultTab("about");
-                    setCurrentView("settings");
-                  }}
-                />
                 {isCurrentAppTakeoverActive && (
                   <Button
                     variant="ghost"

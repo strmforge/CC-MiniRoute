@@ -1310,8 +1310,8 @@ pub fn read_live_settings(app_type: AppType) -> Result<Value, AppError> {
     match app_type {
         AppType::Codex => {
             let mut result = crate::codex_config::read_codex_live_settings()?;
-            // `modelCatalog` is a cc-switch private field that lives only in
-            // the DB SSOT plus the `cc-switch-model-catalog.json` projection
+            // `modelCatalog` is a MiniRoute private field that lives only in
+            // the DB SSOT plus the `cc-miniroute-model-catalog.json` projection
             // file — it is never inlined into `auth.json` or `config.toml`.
             // Reverse-parse the projection so the edit form for the active
             // Codex provider doesn't see an empty mapping table.

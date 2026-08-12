@@ -1,17 +1,17 @@
 [package]
-name = "cc-switch"
+name = "cc-miniroute"
 version = "3.19.2"
-description = "All-in-One Assistant for Claude Code, Codex & Gemini CLI"
+description = "Isolated local routing companion for Codex model experiments"
 authors = ["Jason Young"]
 license = "MIT"
-repository = "https://github.com/farion1231/cc-switch"
+repository = "https://github.com/strmforge/CC-MiniRoute"
 edition = "2021"
 rust-version = "1.85.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
-name = "cc_switch_lib"
+name = "cc_miniroute_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 doctest = false
 
@@ -31,7 +31,6 @@ tauri = { version = "2.8.2", features = ["tray-icon", "protocol-asset", "image-p
 tauri-plugin-log = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-process = "2"
-tauri-plugin-updater = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-store = "2"
 tauri-plugin-deep-link = "2"

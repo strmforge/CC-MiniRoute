@@ -21,7 +21,7 @@ export interface Provider {
   notes?: string;
   // 新增：是否为商业合作伙伴
   isPartner?: boolean;
-  // 可选：供应商元数据（仅存于 ~/.cc-switch/config.json，不写入 live 配置）
+  // 可选：供应商元数据（仅存于 ~/.cc-miniroute/config.json，不写入 live 配置）
   meta?: ProviderMeta;
   // 图标配置
   icon?: string; // 图标名称（如 "openai", "anthropic"）
@@ -256,6 +256,11 @@ export type ClaudeApiFormat =
 // - "anthropic": native Anthropic Messages format, needs local routing to convert to Responses
 export type CodexApiFormat = "openai_responses" | "openai_chat" | "anthropic";
 
+export interface CodexCatalogReasoningLevel {
+  effort: string;
+  description: string;
+}
+
 export interface CodexCatalogModel {
   model: string;
   displayName?: string;
@@ -265,6 +270,10 @@ export interface CodexCatalogModel {
   // automatic text-only model detection for every profile.
   supportsParallelToolCalls?: boolean;
   inputModalities?: string[];
+  // Per-model reasoning capabilities mirrored from the vendor's official Codex
+  // catalog. These stay hidden in the provider form but must survive load/save.
+  defaultReasoningLevel?: string;
+  supportedReasoningLevels?: CodexCatalogReasoningLevel[];
   // Vendor's OFFICIAL base_instructions (model identity / system preamble).
   // Codex requires this field in every catalog entry; when omitted the backend
   // falls back to a neutral default. e.g. MiMo "developed by Xiaomi".
@@ -339,7 +348,7 @@ export interface RemoteSnapshotInfo {
 }
 
 // 应用设置类型（用于设置对话框与 Tauri API）
-// 存储在本地 ~/.cc-switch/settings.json，不随数据库同步
+// 存储在本地 ~/.cc-miniroute/settings.json，不随数据库同步
 export interface Settings {
   // ===== 设备级 UI 设置 =====
   // 是否在系统托盘（macOS 菜单栏）显示图标
@@ -369,6 +378,8 @@ export interface Settings {
   showProfileSwitcher?: boolean;
   // Preserve Codex ChatGPT login in auth.json when switching third-party providers
   preserveCodexOfficialAuthOnSwitch?: boolean;
+  // Expose non-GPT Codex providers through the local proxy's shared model catalog
+  enableCodexMultiProviderBridge?: boolean;
   // Run official Codex under the shared "custom" provider id so future
   // sessions share one resume-history bucket with third-party providers
   unifyCodexSessionHistory?: boolean;

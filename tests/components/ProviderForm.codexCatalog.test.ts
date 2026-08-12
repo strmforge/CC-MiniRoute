@@ -25,6 +25,11 @@ describe("ProviderForm Codex catalog helpers", () => {
           contextWindow: 1000000,
           supportsParallelToolCalls: true,
           inputModalities: ["text", "image"],
+          defaultReasoningLevel: "high",
+          supportedReasoningLevels: [
+            { effort: "none", description: " Think-Off " },
+            { effort: "high", description: " Deep " },
+          ],
           baseInstructions:
             "  You are Codex, a coding agent based on MiniMax-M3.  ",
         },
@@ -44,6 +49,11 @@ describe("ProviderForm Codex catalog helpers", () => {
         contextWindow: 1000000,
         supportsParallelToolCalls: true,
         inputModalities: ["text", "image"],
+        defaultReasoningLevel: "high",
+        supportedReasoningLevels: [
+          { effort: "none", description: "Think-Off" },
+          { effort: "high", description: "Deep" },
+        ],
         baseInstructions: "You are Codex, a coding agent based on MiniMax-M3.",
       },
       { model: "mimo-v2.5-pro", supportsParallelToolCalls: false },

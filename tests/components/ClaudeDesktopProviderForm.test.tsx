@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClientProvider } from "@tanstack/react-query";
 import type { ComponentProps } from "react";
 import { describe, expect, it, vi } from "vitest";
@@ -58,6 +59,60 @@ describe("ClaudeDesktopProviderForm", () => {
       expect(modelMappingToggle).toBeDisabled();
     },
   );
+
+  it("直连预设保留自己的模型列表", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    renderForm(undefined, onSubmit);
+
+    await user.click(screen.getByRole("button", { name: /PackyCode/ }));
+    await user.type(screen.getByLabelText("API Key"), "sk-test");
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    expect(
+      onSubmit.mock.calls[0][0].meta.claudeDesktopModelRoutes,
+    ).toMatchObject({
+      "claude-sonnet-5": { model: "claude-sonnet-5" },
+      "claude-opus-5": { model: "claude-opus-5" },
+      "claude-haiku-4-5": { model: "claude-haiku-4-5" },
+    });
+  });
+
+  it("代理映射在 proxy -> direct -> proxy 切换后保持不变", async () => {
+    const user = userEvent.setup();
+    renderForm({
+      name: "Proxy Provider",
+      settingsConfig: {
+        env: {
+          ANTHROPIC_BASE_URL: "https://api.example.com",
+          ANTHROPIC_AUTH_TOKEN: "sk-test",
+        },
+      },
+      meta: {
+        claudeDesktopMode: "proxy",
+        claudeDesktopModelRoutes: {
+          "claude-sonnet-5": { model: "upstream-sonnet" },
+        },
+      },
+    });
+
+    const modeToggle = screen.getByRole("switch", {
+      name: "需要模型映射",
+    });
+    expect(modeToggle).toBeChecked();
+    expect(screen.getByDisplayValue("upstream-sonnet")).toBeInTheDocument();
+
+    await user.click(modeToggle);
+    expect(modeToggle).not.toBeChecked();
+    expect(
+      screen.queryByDisplayValue("upstream-sonnet"),
+    ).not.toBeInTheDocument();
+
+    await user.click(modeToggle);
+    expect(modeToggle).toBeChecked();
+    expect(screen.getByDisplayValue("upstream-sonnet")).toBeInTheDocument();
+  });
 
   it("编辑模型映射的菜单显示名时保持输入框焦点", () => {
     renderForm({

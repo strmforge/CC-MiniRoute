@@ -3,7 +3,7 @@
 //! 提供 SQL 导出/导入和二进制快照备份功能。
 
 use super::{lock_conn, Database};
-use crate::config::get_app_config_dir;
+use crate::config::{get_app_config_dir, APP_DATABASE_FILENAME};
 use crate::error::AppError;
 use chrono::{Local, Utc};
 use rusqlite::backup::Backup;
@@ -13,7 +13,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
-const CC_SWITCH_SQL_EXPORT_HEADER: &str = "-- CC Switch SQLite 导出";
+const CC_MINIROUTE_SQL_EXPORT_HEADER: &str = "-- CC MiniRoute SQLite export";
+const LEGACY_CC_SWITCH_SQL_EXPORT_HEADER: &str = "-- CC Switch SQLite 导出";
 
 /// Bound combined INSERT batches while still amortizing statement parsing.
 /// A row larger than this cap is emitted alone because it cannot be split.
@@ -226,14 +227,16 @@ impl Database {
 
     fn validate_cc_switch_sql_export(sql: &str) -> Result<(), AppError> {
         let trimmed = sql.trim_start();
-        if trimmed.starts_with(CC_SWITCH_SQL_EXPORT_HEADER) {
+        if trimmed.starts_with(CC_MINIROUTE_SQL_EXPORT_HEADER)
+            || trimmed.starts_with(LEGACY_CC_SWITCH_SQL_EXPORT_HEADER)
+        {
             return Ok(());
         }
 
         Err(AppError::localized(
             "backup.sql.invalid_format",
-            "仅支持导入由 CC Switch 导出的 SQL 备份文件。",
-            "Only SQL backups exported by CC Switch are supported.",
+            "仅支持导入由 CC MiniRoute 或兼容 CC Switch 导出的 SQL 备份文件。",
+            "Only SQL backups exported by CC MiniRoute or compatible CC Switch versions are supported.",
         ))
     }
 
@@ -373,7 +376,7 @@ impl Database {
 
     /// 生成一致性快照备份，返回备份文件路径（不存在主库时返回 None）
     pub(crate) fn backup_database_file(&self) -> Result<Option<PathBuf>, AppError> {
-        let db_path = get_app_config_dir().join("cc-switch.db");
+        let db_path = get_app_config_dir().join(APP_DATABASE_FILENAME);
         if !db_path.exists() {
             return Ok(None);
         }
@@ -469,7 +472,7 @@ impl Database {
             .unwrap_or(0);
 
         output.push_str(&format!(
-            "-- CC Switch SQLite 导出\n-- 生成时间: {timestamp}\n-- user_version: {user_version}\n"
+            "{CC_MINIROUTE_SQL_EXPORT_HEADER}\n-- generated_at: {timestamp}\n-- user_version: {user_version}\n"
         ));
         output.push_str("PRAGMA foreign_keys=OFF;\n");
         output.push_str(&format!("PRAGMA user_version={user_version};\n"));
@@ -836,9 +839,9 @@ mod tests {
             // Prevent the Windows legacy-HOME fallback without mutating HOME:
             // an existing default DB keeps get_app_config_dir() anchored under
             // CC_SWITCH_TEST_HOME and makes import exercise its safety backup.
-            let config_dir = temp_dir.path().join(".cc-switch");
+            let config_dir = temp_dir.path().join(crate::config::APP_CONFIG_DIR_NAME);
             std::fs::create_dir_all(&config_dir).expect("create isolated config directory");
-            std::fs::File::create(config_dir.join("cc-switch.db"))
+            std::fs::File::create(config_dir.join(crate::config::APP_DATABASE_FILENAME))
                 .expect("create isolated database sentinel");
             let guard = Self {
                 previous_test_home,
@@ -881,13 +884,13 @@ mod tests {
         for (label, template) in cases {
             let target = test_home
                 .path()
-                .join(format!("cc-switch-authorizer-{label}.sqlite"));
+                .join(format!("cc-miniroute-authorizer-{label}.sqlite"));
 
             // 合法的导出头 + 越界语句。头部校验只比前缀，这份输入过得了它，
             // 真正拦下来的必须是 authorizer。
             let malicious = format!(
                 "{}\n{}\n",
-                super::CC_SWITCH_SQL_EXPORT_HEADER,
+                super::CC_MINIROUTE_SQL_EXPORT_HEADER,
                 template.replace("{path}", &target.to_string_lossy().replace('\'', "''"))
             );
 
@@ -1003,7 +1006,7 @@ mod tests {
 
         let invalid_sql = format!(
             "{}\nBEGIN TRANSACTION;\nCREATE TABLE partial (id INTEGER);\nTHIS IS NOT SQL;\n",
-            super::CC_SWITCH_SQL_EXPORT_HEADER
+            super::CC_MINIROUTE_SQL_EXPORT_HEADER
         );
         assert!(target.import_sql_string(&invalid_sql).is_err());
 
@@ -1040,7 +1043,7 @@ mod tests {
              INSERT INTO skills (key, installed, installed_at)
              VALUES ('claude:legacy-skill', 1, 1700000000);
              COMMIT;\nPRAGMA foreign_keys=ON;\n",
-            super::CC_SWITCH_SQL_EXPORT_HEADER,
+            super::CC_MINIROUTE_SQL_EXPORT_HEADER,
             crate::database::tests::V3_8_SCHEMA_V1_SQL,
         );
 

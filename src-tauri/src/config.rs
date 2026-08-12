@@ -6,6 +6,19 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::error::AppError;
 
+pub const APP_DISPLAY_NAME: &str = "CC MiniRoute";
+pub const APP_CONFIG_DIR_NAME: &str = ".cc-miniroute";
+pub const APP_DATABASE_FILENAME: &str = "cc-miniroute.db";
+pub const APP_LOG_BASENAME: &str = "cc-miniroute";
+#[allow(dead_code)]
+pub const DEFAULT_PROXY_PORT: u16 = 15731;
+pub const DEEP_LINK_SCHEME: &str = "ccminiroute";
+pub const LEGACY_DEEP_LINK_SCHEMES: &[&str] = &["ccswitch"];
+
+pub fn is_supported_deep_link_scheme(scheme: &str) -> bool {
+    scheme == DEEP_LINK_SCHEME || LEGACY_DEEP_LINK_SCHEMES.contains(&scheme)
+}
+
 /// 获取用户主目录，带回退和日志
 ///
 /// ## Windows 注意事项
@@ -13,7 +26,7 @@ use crate::error::AppError;
 /// - `dirs::home_dir()` 在 Windows 上使用 `SHGetKnownFolderPath(FOLDERID_Profile)`，
 ///   返回的是真实用户目录（类似 `C:\\Users\\Alice`），与 v3.10.2 行为一致。
 /// - 不要直接使用 `HOME` 环境变量：它可能由 Git/Cygwin/MSYS 等第三方工具注入，
-///   且不一定等于用户目录，可能导致 `.cc-switch/cc-switch.db` 路径变化，从而“看起来像数据丢失”。
+///   且不一定等于用户目录，可能导致 MiniRoute 数据库路径变化，从而“看起来像数据丢失”。
 ///
 /// ## 测试隔离
 ///
@@ -199,13 +212,13 @@ pub fn get_claude_settings_path() -> PathBuf {
     settings
 }
 
-/// 获取应用配置目录路径 (~/.cc-switch)
+/// 获取 MiniRoute 应用配置目录路径 (~/.cc-miniroute)
 pub fn get_app_config_dir() -> PathBuf {
     if let Some(custom) = crate::app_store::get_app_config_dir_override() {
         return custom;
     }
 
-    let default_dir = get_home_dir().join(".cc-switch");
+    let default_dir = get_home_dir().join(APP_CONFIG_DIR_NAME);
 
     // 兼容 v3.10.3：当用户环境存在 `HOME` 且与真实用户目录不同，
     // v3.10.3 可能在 `HOME/.cc-switch/` 下创建/使用了数据库。
@@ -213,13 +226,13 @@ pub fn get_app_config_dir() -> PathBuf {
     // 同时也避免新安装因为 `HOME` 被设置而写入非预期路径。
     #[cfg(windows)]
     {
-        let default_db = default_dir.join("cc-switch.db");
+        let default_db = default_dir.join(APP_DATABASE_FILENAME);
         if !default_db.exists() {
             if let Ok(home_env) = std::env::var("HOME") {
                 let trimmed = home_env.trim();
                 if !trimmed.is_empty() {
-                    let legacy_dir = PathBuf::from(trimmed).join(".cc-switch");
-                    if legacy_dir.join("cc-switch.db").exists() {
+                    let legacy_dir = PathBuf::from(trimmed).join(APP_CONFIG_DIR_NAME);
+                    if legacy_dir.join(APP_DATABASE_FILENAME).exists() {
                         log::info!(
                             "Detected v3.10.3 legacy database at {}, using it instead of {}",
                             legacy_dir.display(),

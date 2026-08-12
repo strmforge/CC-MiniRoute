@@ -1,6 +1,6 @@
 //! Deep link URL parser
 //!
-//! Parses ccswitch:// URLs into DeepLinkImportRequest structures.
+//! Parses CC MiniRoute and legacy CC Switch URLs into import requests.
 
 use super::utils::validate_url;
 use super::DeepLinkImportRequest;
@@ -8,7 +8,7 @@ use crate::error::AppError;
 use std::collections::HashMap;
 use url::Url;
 
-/// Parse a ccswitch:// URL into a DeepLinkImportRequest
+/// Parse a supported deep-link URL into a DeepLinkImportRequest.
 ///
 /// Expected format:
 /// ccswitch://v1/import?resource={type}&...
@@ -19,9 +19,10 @@ pub fn parse_deeplink_url(url_str: &str) -> Result<DeepLinkImportRequest, AppErr
 
     // Validate scheme
     let scheme = url.scheme();
-    if scheme != "ccswitch" {
+    if !crate::config::is_supported_deep_link_scheme(scheme) {
         return Err(AppError::InvalidInput(format!(
-            "Invalid scheme: expected 'ccswitch', got '{scheme}'"
+            "Invalid scheme: expected '{}', got '{scheme}'",
+            crate::config::DEEP_LINK_SCHEME
         )));
     }
 

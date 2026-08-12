@@ -285,13 +285,150 @@ fn codex_provider_catalog_model_ids(provider: &Provider) -> HashSet<String> {
         .map(|models| {
             models
                 .iter()
-                .filter_map(|model| model.get("model").and_then(|value| value.as_str()))
+                .filter_map(crate::codex_config::codex_model_catalog_entry_id)
                 .map(str::trim)
                 .filter(|model| !model.is_empty())
                 .map(ToString::to_string)
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Whether a provider explicitly owns this Codex model id. Ownership is exact
+/// (case-insensitive) and comes only from the provider's model catalog or its
+/// configured upstream model; endpoint/provider heuristics never claim models.
+pub fn codex_provider_declares_model(provider: &Provider, request_model: &str) -> bool {
+    let request_model = request_model.trim();
+    if request_model.is_empty() {
+        return false;
+    }
+
+    codex_provider_catalog_model_ids(provider)
+        .iter()
+        .any(|model| model.eq_ignore_ascii_case(request_model))
+        || codex_provider_upstream_model(provider)
+            .as_deref()
+            .is_some_and(|model| model.eq_ignore_ascii_case(request_model))
+}
+
+/// Resolve one exact owner for a Codex model from the providers the user has
+/// actually configured. Model aliases are never inferred from a vendor name or
+/// endpoint: an owner must declare the id in its catalog or as its configured
+/// upstream model. Duplicate declarations fail closed so credentials are never
+/// sent to an arbitrary provider.
+pub fn resolve_codex_model_owner(
+    providers: impl IntoIterator<Item = Provider>,
+    request_model: &str,
+) -> Result<Option<Provider>, String> {
+    let owners = providers
+        .into_iter()
+        .filter(|candidate| codex_provider_declares_model(candidate, request_model))
+        .collect::<Vec<_>>();
+
+    match owners.as_slice() {
+        [] => Ok(None),
+        [owner] => Ok(Some(owner.clone())),
+        _ => {
+            let owner_names = owners
+                .iter()
+                .map(|owner| format!("{} ({})", owner.name, owner.id))
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(format!(
+                "Codex model '{request_model}' is declared by multiple providers: {owner_names}"
+            ))
+        }
+    }
+}
+
+#[cfg(test)]
+mod bridge_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn provider(settings_config: JsonValue) -> Provider {
+        Provider::with_id(
+            "provider".to_string(),
+            "Provider".to_string(),
+            settings_config,
+            None,
+        )
+    }
+
+    #[test]
+    fn declared_model_matches_catalog_id_case_insensitively() {
+        let provider = provider(json!({
+            "modelCatalog": { "models": [{ "slug": "MiMo-V2.5" }] }
+        }));
+        assert!(codex_provider_declares_model(&provider, "mimo-v2.5"));
+        assert!(!codex_provider_declares_model(&provider, "deepseek-v4"));
+    }
+
+    #[test]
+    fn declared_model_falls_back_to_configured_upstream_model() {
+        let provider = provider(json!({ "model": "deepseek-v4-pro" }));
+        assert!(codex_provider_declares_model(&provider, "DeepSeek-V4-Pro"));
+    }
+
+    #[test]
+    fn exact_owner_resolution_selects_official_provider_beside_gpt_relay() {
+        let relay = Provider::with_id(
+            "relay".to_string(),
+            "GPT Relay".to_string(),
+            json!({
+                "modelCatalog": { "models": [{ "model": "gpt-5.6-sol" }] }
+            }),
+            None,
+        );
+        let deepseek = Provider::with_id(
+            "deepseek".to_string(),
+            "DeepSeek Official".to_string(),
+            json!({
+                "modelCatalog": {
+                    "models": [
+                        { "model": "deepseek-v4-flash" },
+                        { "model": "deepseek-v4-pro" }
+                    ]
+                }
+            }),
+            None,
+        );
+        let minimax = Provider::with_id(
+            "minimax".to_string(),
+            "MiniMax Official".to_string(),
+            json!({
+                "modelCatalog": { "models": [{ "model": "MiniMax-M3" }] }
+            }),
+            None,
+        );
+
+        let owner =
+            resolve_codex_model_owner(vec![relay, deepseek.clone(), minimax], "deepseek-v4-flash")
+                .expect("owner resolution")
+                .expect("DeepSeek owner");
+        assert_eq!(owner.id, deepseek.id);
+    }
+
+    #[test]
+    fn exact_owner_resolution_rejects_ambiguous_aliases() {
+        let first = Provider::with_id(
+            "first".to_string(),
+            "First".to_string(),
+            json!({ "modelCatalog": { "models": [{ "model": "shared" }] } }),
+            None,
+        );
+        let second = Provider::with_id(
+            "second".to_string(),
+            "Second".to_string(),
+            json!({ "model": "shared" }),
+            None,
+        );
+
+        let error = resolve_codex_model_owner(vec![first, second], "shared")
+            .expect_err("ambiguous aliases must fail closed");
+        assert!(error.contains("First (first)"));
+        assert!(error.contains("Second (second)"));
+    }
 }
 
 /// For Codex Chat providers, ensure the request uses the configured upstream

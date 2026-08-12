@@ -301,17 +301,22 @@ export function ClaudeDesktopProviderForm({
     providerType?: string;
     requiresOAuth?: boolean;
   } | null>(null);
-  const [routes, setRoutes] = useState<RouteRow[]>(() => {
+  const [directRoutes, setDirectRoutes] = useState<RouteRow[]>(() => {
     const rows = initialRouteRows(initialData?.meta?.claudeDesktopModelRoutes);
-    // proxy 模式归一化成固定三档；但初始无任何 route 时保持空数组，交给 seed
+    return initialMode === "direct" ? rows : [];
+  });
+  const [proxyRoutes, setProxyRoutes] = useState<RouteRow[]>(() => {
+    const rows = initialRouteRows(initialData?.meta?.claudeDesktopModelRoutes);
+    // proxy 模式归一化成固定四档；但初始无任何 route 时保持空数组，交给 seed
     // effect 用默认路由回填（默认 1M 声明、ANTHROPIC_MODEL 预填），避免过早
-    // normalize 成空三档把 routes.length 撑到 3、永久挡住 seed。
+    // normalize 成空四档把 routes.length 撑到 4、永久挡住 seed。
     return initialMode === "proxy" && rows.length > 0
       ? normalizeProxyRows(rows)
-      : rows;
+      : [];
   });
-  const didSeedDefaultRoutes = useRef(
-    Object.keys(initialData?.meta?.claudeDesktopModelRoutes ?? {}).length > 0,
+  const didSeedDefaultProxyRoutes = useRef(
+    initialMode === "proxy" &&
+      Object.keys(initialData?.meta?.claudeDesktopModelRoutes ?? {}).length > 0,
   );
   const [fetchedModels, setFetchedModels] = useState<FetchedModel[]>([]);
   const [isFetchingModels, setIsFetchingModels] = useState(false);
@@ -402,6 +407,8 @@ export function ClaudeDesktopProviderForm({
     isOAuthProviderType(activeProviderType);
   const effectiveMode: "direct" | "proxy" = usesManagedOAuth ? "proxy" : mode;
   const needsModelMapping = effectiveMode === "proxy";
+  const routes = needsModelMapping ? proxyRoutes : directRoutes;
+  const setRoutes = needsModelMapping ? setProxyRoutes : setDirectRoutes;
 
   // API Key 获取/邀请链接（与 Claude Code 表单同款，见 ClaudeFormFields）
   const apiKeyLinkCategory = activePreset?.category ?? initialData?.category;
@@ -434,10 +441,22 @@ export function ClaudeDesktopProviderForm({
       preset.requiresOAuth === true || isOAuthProviderType(preset.providerType)
         ? "proxy"
         : preset.mode;
-    didSeedDefaultRoutes.current = true;
     setMode(presetMode);
+    setDirectRoutes(
+      presetMode === "direct" && preset.modelRoutes
+        ? preset.modelRoutes.map((route) =>
+            createRouteRow({
+              route: route.upstreamModel,
+              model: "",
+              labelOverride: route.labelOverride ?? "",
+              supports1m: route.supports1m,
+            }),
+          )
+        : [],
+    );
     if (presetMode === "proxy" && preset.modelRoutes) {
-      setRoutes(
+      didSeedDefaultProxyRoutes.current = true;
+      setProxyRoutes(
         normalizeProxyRows(
           preset.modelRoutes.map((r) =>
             createRouteRow({
@@ -450,7 +469,8 @@ export function ClaudeDesktopProviderForm({
         ),
       );
     } else {
-      setRoutes([]);
+      didSeedDefaultProxyRoutes.current = false;
+      setProxyRoutes([]);
     }
   };
 
@@ -464,9 +484,10 @@ export function ClaudeDesktopProviderForm({
       setApiKey("");
       setApiKeyField("ANTHROPIC_AUTH_TOKEN");
       setApiFormat("anthropic");
-      didSeedDefaultRoutes.current = false;
+      didSeedDefaultProxyRoutes.current = false;
       setMode("direct");
-      setRoutes([]);
+      setDirectRoutes([]);
+      setProxyRoutes([]);
       return;
     }
 
@@ -494,19 +515,18 @@ export function ClaudeDesktopProviderForm({
     if (usesManagedOAuth) return;
     setMode(checked ? "proxy" : "direct");
     if (checked) {
-      // 切到 proxy：归一化成固定 Sonnet / Opus / Haiku 三档；
-      // 若当前无路由则以后端默认路由作为来源（保留 Sonnet 默认模型）。
-      setRoutes((current) => {
+      // 切到 proxy：只恢复/初始化映射模式自己的固定四档，不复用直连模型列表。
+      setProxyRoutes((current) => {
         // 默认路由（默认 1M 声明、ANTHROPIC_MODEL 预填）异步加载完成前，若当前
         // 无路由则保持空数组，交给 seed effect 在加载后回填；不要过早 normalize
-        // 成空三档（会把 routes.length 撑到 3、永久挡住 seed）。
+        // 成空四档（会把 routes.length 撑到 4、永久挡住 seed）。
         if (current.length === 0 && defaultProxyRouteRows.length === 0) {
           return current;
         }
         const useDefaults =
           current.length === 0 && defaultProxyRouteRows.length > 0;
         if (useDefaults) {
-          didSeedDefaultRoutes.current = true;
+          didSeedDefaultProxyRoutes.current = true;
         }
         return normalizeProxyRows(
           useDefaults ? defaultProxyRouteRows : current,
@@ -517,17 +537,17 @@ export function ClaudeDesktopProviderForm({
 
   useEffect(() => {
     if (
-      didSeedDefaultRoutes.current ||
+      didSeedDefaultProxyRoutes.current ||
       effectiveMode !== "proxy" ||
-      routes.length > 0 ||
+      proxyRoutes.length > 0 ||
       defaultProxyRouteRows.length === 0
     ) {
       return;
     }
 
-    didSeedDefaultRoutes.current = true;
-    setRoutes(normalizeProxyRows(defaultProxyRouteRows));
-  }, [defaultProxyRouteRows, effectiveMode, routes.length]);
+    didSeedDefaultProxyRoutes.current = true;
+    setProxyRoutes(normalizeProxyRows(defaultProxyRouteRows));
+  }, [defaultProxyRouteRows, effectiveMode, proxyRoutes.length]);
 
   const handleFetchModels = async () => {
     if (!baseUrl.trim() || !apiKey.trim()) {
@@ -920,7 +940,7 @@ export function ClaudeDesktopProviderForm({
                     {needsModelMapping
                       ? t("claudeDesktop.modelMappingOnHint", {
                           defaultValue:
-                            "Claude Desktop 只接受 claude-sonnet-* / claude-opus-* / claude-haiku-* 三档角色 ID。开启后 CC Switch 会把这三档映射到供应商的实际模型，并在使用期间保持本地路由开启。",
+                            "Claude Desktop 只接受 claude-sonnet-* / claude-opus-* / claude-haiku-* 三档角色 ID。开启后 CC MiniRoute 会把这三档映射到供应商的实际模型，并在使用期间保持本地路由开启。",
                         })
                       : t("claudeDesktop.modelMappingOffHint", {
                           defaultValue:

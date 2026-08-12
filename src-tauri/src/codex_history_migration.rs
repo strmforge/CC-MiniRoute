@@ -194,7 +194,7 @@ pub fn maybe_migrate_codex_provider_template_bucket(
 /// 重新开启并再次勾选即可补迁关闭期间产生的官方会话。
 /// custom 桶里官方与第三方会话无法区分，自动逻辑绝不反向搬回；
 /// 用户可在关闭开关时选择按备份账本精确还原（见 `restore_codex_official_history_from_backups`）。
-/// 迁移前 jsonl / state DB 均备份到 `~/.cc-switch/backups/codex-official-history-unify-v1/`。
+/// 迁移前 jsonl / state DB 均备份到 `~/.cc-miniroute/backups/codex-official-history-unify-v1/`。
 pub fn maybe_migrate_codex_official_history_to_unified_bucket(
 ) -> Result<CodexHistoryProviderBucketMigrationOutcome, AppError> {
     if !crate::settings::unify_codex_session_history() {
@@ -1340,7 +1340,7 @@ base_url = "https://aihubmix.example/v1"
             "model_provider = \"openai\"\n"
         ));
         assert!(!codex_config_text_routes_custom(
-            "base_url = \"http://127.0.0.1:15721/codex\"\n"
+            "base_url = \"http://127.0.0.1:15731/codex\"\n"
         ));
         assert!(!codex_config_text_routes_custom(""));
         assert!(!codex_config_text_routes_custom("not toml ["));

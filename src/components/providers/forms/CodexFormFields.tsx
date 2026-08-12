@@ -132,6 +132,12 @@ function createCatalogRow(seed?: Partial<CodexCatalogModel>): CodexCatalogRow {
       ? { supportsParallelToolCalls: seed.supportsParallelToolCalls }
       : {}),
     ...(seed?.inputModalities ? { inputModalities: seed.inputModalities } : {}),
+    ...(seed?.defaultReasoningLevel
+      ? { defaultReasoningLevel: seed.defaultReasoningLevel }
+      : {}),
+    ...(seed?.supportedReasoningLevels
+      ? { supportedReasoningLevels: seed.supportedReasoningLevels }
+      : {}),
     ...(seed?.baseInstructions
       ? { baseInstructions: seed.baseInstructions }
       : {}),
@@ -158,7 +164,11 @@ function catalogRowsMatchModels(
         (incoming.supportsParallelToolCalls ?? null) &&
       (row.baseInstructions ?? "") === (incoming.baseInstructions ?? "") &&
       JSON.stringify(row.inputModalities ?? []) ===
-        JSON.stringify(incoming.inputModalities ?? [])
+        JSON.stringify(incoming.inputModalities ?? []) &&
+      (row.defaultReasoningLevel ?? "") ===
+        (incoming.defaultReasoningLevel ?? "") &&
+      JSON.stringify(row.supportedReasoningLevels ?? []) ===
+        JSON.stringify(incoming.supportedReasoningLevels ?? [])
     );
   });
 }
@@ -937,7 +947,7 @@ export function CodexFormFields({
                   <p className="text-xs leading-relaxed text-muted-foreground">
                     {t("codexConfig.modelMappingHint", {
                       defaultValue:
-                        "选择模型角色后，CC Switch 会自动生成 Codex 兼容路由；菜单显示名可以填 DeepSeek、Kimi 等品牌模型，实际请求模型按右侧填写内容发送。",
+                        "选择模型角色后，CC MiniRoute 会自动生成 Codex 兼容路由；菜单显示名可以填 DeepSeek、Kimi 等品牌模型，实际请求模型按右侧填写内容发送。",
                     })}
                   </p>
                 </div>

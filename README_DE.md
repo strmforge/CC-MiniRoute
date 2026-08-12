@@ -1,18 +1,17 @@
 <div align="center">
 
-# CC Switch
+# CC MiniRoute
 
 ### Der All-in-One-Manager für Claude Code, Claude Desktop, Codex, Gemini CLI, Grok Build, OpenCode, OpenClaw & Hermes Agent
 
-[![Version](https://img.shields.io/github/v/release/farion1231/cc-switch?color=blue&label=version)](https://github.com/farion1231/cc-switch/releases)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/farion1231/cc-switch/releases)
+[![Version](https://img.shields.io/github/v/release/strmforge/CC-MiniRoute?color=blue&label=version)](https://github.com/strmforge/CC-MiniRoute/releases)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/strmforge/CC-MiniRoute/releases)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-orange.svg)](https://tauri.app/)
-[![Downloads](https://img.shields.io/github/downloads/farion1231/cc-switch/total)](https://github.com/farion1231/cc-switch/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/strmforge/CC-MiniRoute/total)](https://github.com/strmforge/CC-MiniRoute/releases/latest)
 
-<a href="https://trendshift.io/repositories/15372" target="_blank"><img src="https://trendshift.io/api/badge/repositories/15372" alt="farion1231%2Fcc-switch | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
-<a href="https://www.star-history.com/#farion1231/cc-switch&Date"><picture><source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/badge?repo=farion1231/cc-switch&theme=dark" /><img alt="Star History Rank" src="https://api.star-history.com/badge?repo=farion1231/cc-switch" width="196" height="55" /></picture></a>
+<a href="https://www.star-history.com/#strmforge/CC-MiniRoute&Date"><picture><source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/badge?repo=strmforge/CC-MiniRoute&theme=dark" /><img alt="Star History Rank" src="https://api.star-history.com/badge?repo=strmforge/CC-MiniRoute" width="196" height="55" /></picture></a>
 
-### 🌐 Die einzige offizielle Website: **[ccswitch.io](https://ccswitch.io)**
+### Projektseite: **[github.com/strmforge/CC-MiniRoute](https://github.com/strmforge/CC-MiniRoute)**
 
 [English](README.md) | [中文](README_ZH.md) | [日本語](README_JA.md) | Deutsch | [Changelog](CHANGELOG.md)
 
@@ -584,7 +583,7 @@ Eröffnen Sie für neue Funktionen bitte vor dem Einreichen eines PR ein Issue z
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=farion1231/cc-switch&type=Date)](https://www.star-history.com/#farion1231/cc-switch&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=strmforge/CC-MiniRoute&type=Date)](https://www.star-history.com/#strmforge/CC-MiniRoute&Date)
 
 ## Lizenz
 

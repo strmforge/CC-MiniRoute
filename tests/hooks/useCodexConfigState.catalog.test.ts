@@ -22,6 +22,11 @@ describe("useCodexConfigState catalog load", () => {
               contextWindow: 1000000,
               supportsParallelToolCalls: true,
               inputModalities: ["text", "image"],
+              defaultReasoningLevel: "high",
+              supportedReasoningLevels: [
+                { effort: "none", description: "Think-Off" },
+                { effort: "high", description: "Deep" },
+              ],
               baseInstructions: "You are Codex, based on MiniMax-M3.",
             },
           ],
@@ -38,6 +43,11 @@ describe("useCodexConfigState catalog load", () => {
         contextWindow: 1000000,
         supportsParallelToolCalls: true,
         inputModalities: ["text", "image"],
+        defaultReasoningLevel: "high",
+        supportedReasoningLevels: [
+          { effort: "none", description: "Think-Off" },
+          { effort: "high", description: "Deep" },
+        ],
         baseInstructions: "You are Codex, based on MiniMax-M3.",
       },
     ]);
@@ -56,6 +66,11 @@ describe("useCodexConfigState catalog load", () => {
               context_window: 262144,
               supports_parallel_tool_calls: false,
               input_modalities: ["text"],
+              default_reasoning_level: "high",
+              supported_reasoning_levels: [
+                { effort: "none", description: "Disable Thinking" },
+                { effort: "high", description: "Enabled Thinking" },
+              ],
               base_instructions: "You are MiMo, developed by Xiaomi.",
             },
           ],
@@ -72,6 +87,11 @@ describe("useCodexConfigState catalog load", () => {
         contextWindow: 262144,
         supportsParallelToolCalls: false,
         inputModalities: ["text"],
+        defaultReasoningLevel: "high",
+        supportedReasoningLevels: [
+          { effort: "none", description: "Disable Thinking" },
+          { effort: "high", description: "Enabled Thinking" },
+        ],
         baseInstructions: "You are MiMo, developed by Xiaomi.",
       },
     ]);

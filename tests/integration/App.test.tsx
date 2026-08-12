@@ -193,7 +193,7 @@ describe("App integration with MSW", () => {
     toastErrorMock.mockReset();
     skillsPanelMocks.checkUpdates.mockReset();
     skillsPanelMocks.openDiscovery.mockReset();
-    localStorage.removeItem("cc-switch-last-view");
+    localStorage.removeItem("cc-miniroute-last-view");
   });
 
   it("covers basic provider flows via real hooks", async () => {
@@ -387,7 +387,7 @@ describe("App integration with MSW", () => {
   });
 
   it("hosts the Skills check-update action in the App toolbar", async () => {
-    localStorage.setItem("cc-switch-last-view", "skills");
+    localStorage.setItem("cc-miniroute-last-view", "skills");
     const { default: App } = await import("@/App");
     renderApp(App);
 
@@ -404,7 +404,7 @@ describe("App integration with MSW", () => {
   });
 
   it("routes the Skills discover toolbar action through the panel guard", async () => {
-    localStorage.setItem("cc-switch-last-view", "skills");
+    localStorage.setItem("cc-miniroute-last-view", "skills");
     const { default: App } = await import("@/App");
     renderApp(App);
 

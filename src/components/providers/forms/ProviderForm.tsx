@@ -160,6 +160,16 @@ export const normalizeCodexCatalogModelsForSave = (
     );
 
     const baseInstructions = item.baseInstructions?.trim();
+    const defaultReasoningLevel = item.defaultReasoningLevel?.trim();
+    const supportedReasoningLevels = item.supportedReasoningLevels
+      ?.filter(
+        (level) =>
+          typeof level?.effort === "string" && level.effort.trim().length > 0,
+      )
+      .map((level) => ({
+        effort: level.effort.trim(),
+        description: level.description?.trim() || level.effort.trim(),
+      }));
 
     normalized.push({
       model,
@@ -171,6 +181,10 @@ export const normalizeCodexCatalogModelsForSave = (
         : {}),
       ...(inputModalities && inputModalities.length > 0
         ? { inputModalities }
+        : {}),
+      ...(defaultReasoningLevel ? { defaultReasoningLevel } : {}),
+      ...(supportedReasoningLevels && supportedReasoningLevels.length > 0
+        ? { supportedReasoningLevels }
         : {}),
       ...(baseInstructions ? { baseInstructions } : {}),
     });

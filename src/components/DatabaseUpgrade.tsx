@@ -13,8 +13,7 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-
-const RELEASES_URL = "https://github.com/farion1231/cc-switch/releases";
+import { RELEASES_URL } from "@/config/brand";
 
 interface DatabaseUpgradeProps {
   payload: {
@@ -149,7 +148,7 @@ export function DatabaseUpgrade({ payload }: DatabaseUpgradeProps) {
             <p className="text-sm text-muted-foreground">
               {t(
                 "dbUpgrade.description",
-                "当前数据库由更新版本的 CC Switch 创建，需要升级应用后才能继续使用。升级不会删除你的数据。",
+                "当前数据库由更新版本的 CC MiniRoute 创建，需要升级应用后才能继续使用。升级不会删除你的数据。",
               )}
             </p>
             {dbVersion != null && supportedVersion != null && (

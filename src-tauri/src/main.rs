@@ -31,5 +31,5 @@ fn main() {
         }
     }
 
-    cc_switch_lib::run();
+    cc_miniroute_lib::run();
 }

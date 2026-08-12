@@ -76,9 +76,9 @@ import {
 } from "./utils";
 
 const SESSION_LIST_VIEW_MODE_STORAGE_KEY =
-  "cc-switch.sessionManager.listViewMode";
+  "cc-miniroute.sessionManager.listViewMode";
 const SESSION_GROUP_EXPANSION_STORAGE_KEY =
-  "cc-switch.sessionManager.groupExpansionState";
+  "cc-miniroute.sessionManager.groupExpansionState";
 
 type ProviderFilter =
   | "all"

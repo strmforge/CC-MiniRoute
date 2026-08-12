@@ -46,6 +46,9 @@ pub struct RequestContext {
     /// 这里使用本地 settings 的设备级 current provider。
     /// 代理模式下如果实际使用的 provider 与此不一致，会触发切换以确保 UI 始终准确。
     pub current_provider_id: String,
+    /// Model-ownership routing must not rewrite the user's selected GPT
+    /// provider after a non-GPT request succeeds.
+    suppress_provider_switch: bool,
     /// 请求中的模型名称
     pub request_model: String,
     /// 实际发往上游的模型名（路由接管/模型映射后的真值，forward 成功后回填）。
@@ -129,19 +132,60 @@ impl RequestContext {
             session_result.client_provided
         );
 
-        // 使用共享的 ProviderRouter 选择 Provider（熔断器状态跨请求保持）
-        // 注意：只在这里调用一次，结果传递给 forwarder，避免重复消耗 HalfOpen 名额
-        let providers = state
-            .provider_router
-            .select_providers(app_type_str)
-            .await
-            .map_err(|e| match e {
-                crate::error::AppError::AllProvidersCircuitOpen => {
-                    ProxyError::AllProvidersCircuitOpen
+        let bridge_candidate = app_type == AppType::Codex
+            && crate::settings::get_settings().enable_codex_multi_provider_bridge
+            && request_model != "unknown"
+            && !crate::codex_config::is_codex_openai_family_model(&request_model);
+
+        // Model ownership routing happens before the ordinary provider router.
+        // A GPT provider being unavailable must not prevent an independently
+        // configured native Responses model from being used.
+        let owned_provider = if bridge_candidate {
+            let all_providers = state
+                .db
+                .get_all_providers(AppType::Codex.as_str())
+                .map_err(|e| ProxyError::DatabaseError(e.to_string()))?;
+            match crate::proxy::providers::resolve_codex_model_owner(
+                all_providers.into_values(),
+                &request_model,
+            )
+            .map_err(ProxyError::ConfigError)?
+            {
+                None => None,
+                Some(owner) => {
+                    log::info!(
+                        "[Codex] Multi-provider bridge pinned model '{}' to provider '{}' ({})",
+                        request_model,
+                        owner.name,
+                        owner.id
+                    );
+                    Some(owner)
                 }
-                crate::error::AppError::NoProvidersConfigured => ProxyError::NoProvidersConfigured,
-                _ => ProxyError::DatabaseError(e.to_string()),
-            })?;
+            }
+        } else {
+            None
+        };
+
+        // Use the ordinary failover chain only for GPT requests, bridge-disabled
+        // requests, or a non-GPT model no provider explicitly owns.
+        let (providers, suppress_provider_switch) = if let Some(owner) = owned_provider {
+            (vec![owner], true)
+        } else {
+            let providers = state
+                .provider_router
+                .select_providers(app_type_str)
+                .await
+                .map_err(|e| match e {
+                    crate::error::AppError::AllProvidersCircuitOpen => {
+                        ProxyError::AllProvidersCircuitOpen
+                    }
+                    crate::error::AppError::NoProvidersConfigured => {
+                        ProxyError::NoProvidersConfigured
+                    }
+                    _ => ProxyError::DatabaseError(e.to_string()),
+                })?;
+            (providers, false)
+        };
 
         let provider = providers
             .first()
@@ -163,6 +207,7 @@ impl RequestContext {
             provider,
             providers,
             current_provider_id,
+            suppress_provider_switch,
             request_model,
             outbound_model: None,
             tag,
@@ -233,6 +278,7 @@ impl RequestContext {
             state.failover_manager.clone(),
             state.app_handle.clone(),
             self.current_provider_id.clone(),
+            self.suppress_provider_switch,
             self.session_id.clone(),
             self.session_client_provided,
             first_byte_timeout,
@@ -300,7 +346,174 @@ pub(crate) fn extract_gemini_model_from_path(endpoint: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::extract_gemini_model_from_path;
+    use super::{extract_gemini_model_from_path, RequestContext};
+    use crate::app_config::AppType;
+    use crate::database::Database;
+    use crate::provider::{Provider, ProviderMeta};
+    use crate::proxy::{
+        failover_switch::FailoverSwitchManager,
+        provider_router::ProviderRouter,
+        providers::{codex_chat_history::CodexChatHistoryStore, gemini_shadow::GeminiShadowStore},
+        server::ProxyState,
+        types::{ProxyConfig, ProxyStatus},
+    };
+    use axum::http::HeaderMap;
+    use serde_json::json;
+    use serial_test::serial;
+    use std::{collections::HashMap, env, sync::Arc};
+    use tempfile::TempDir;
+    use tokio::sync::RwLock;
+
+    struct TempHome {
+        #[allow(dead_code)]
+        dir: TempDir,
+        original_home: Option<String>,
+        original_userprofile: Option<String>,
+        original_test_home: Option<String>,
+    }
+
+    impl TempHome {
+        fn new() -> Self {
+            let dir = TempDir::new().expect("failed to create temp home");
+            let original_home = env::var("HOME").ok();
+            let original_userprofile = env::var("USERPROFILE").ok();
+            let original_test_home = env::var("CC_SWITCH_TEST_HOME").ok();
+
+            env::set_var("HOME", dir.path());
+            env::set_var("USERPROFILE", dir.path());
+            env::set_var("CC_SWITCH_TEST_HOME", dir.path());
+            crate::settings::reload_settings().expect("reload settings");
+
+            Self {
+                dir,
+                original_home,
+                original_userprofile,
+                original_test_home,
+            }
+        }
+    }
+
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            match &self.original_home {
+                Some(value) => env::set_var("HOME", value),
+                None => env::remove_var("HOME"),
+            }
+            match &self.original_userprofile {
+                Some(value) => env::set_var("USERPROFILE", value),
+                None => env::remove_var("USERPROFILE"),
+            }
+            match &self.original_test_home {
+                Some(value) => env::set_var("CC_SWITCH_TEST_HOME", value),
+                None => env::remove_var("CC_SWITCH_TEST_HOME"),
+            }
+        }
+    }
+
+    fn build_state(db: Arc<Database>) -> ProxyState {
+        ProxyState {
+            db: db.clone(),
+            config: Arc::new(RwLock::new(ProxyConfig::default())),
+            status: Arc::new(RwLock::new(ProxyStatus::default())),
+            start_time: Arc::new(RwLock::new(None)),
+            current_providers: Arc::new(RwLock::new(HashMap::new())),
+            provider_router: Arc::new(ProviderRouter::new(db.clone())),
+            gemini_shadow: Arc::new(GeminiShadowStore::default()),
+            codex_chat_history: Arc::new(CodexChatHistoryStore::default()),
+            app_handle: None,
+            failover_manager: Arc::new(FailoverSwitchManager::new(db)),
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn codex_bridge_routes_owned_model_without_changing_selected_gpt_provider() {
+        let _home = TempHome::new();
+        let mut settings = crate::settings::get_settings();
+        settings.enable_codex_multi_provider_bridge = true;
+        settings.current_provider_codex = Some("relay".to_string());
+        crate::settings::update_settings(settings).expect("enable Codex bridge");
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let mut relay = Provider::with_id(
+            "relay".to_string(),
+            "GPT Relay".to_string(),
+            json!({
+                "modelCatalog": { "models": [{ "model": "gpt-5.6-sol" }] }
+            }),
+            None,
+        );
+        relay.meta = Some(ProviderMeta {
+            api_format: Some("openai_responses".to_string()),
+            ..Default::default()
+        });
+        let mut deepseek = Provider::with_id(
+            "deepseek".to_string(),
+            "DeepSeek Official".to_string(),
+            json!({
+                "modelCatalog": {
+                    "models": [
+                        { "model": "deepseek-v4-flash" },
+                        { "model": "deepseek-v4-pro" }
+                    ]
+                }
+            }),
+            None,
+        );
+        deepseek.category = Some("cn_official".to_string());
+        deepseek.meta = Some(ProviderMeta {
+            api_format: Some("openai_responses".to_string()),
+            ..Default::default()
+        });
+
+        db.save_provider("codex", &relay).expect("save relay");
+        db.save_provider("codex", &deepseek).expect("save DeepSeek");
+        db.set_current_provider("codex", "relay")
+            .expect("select relay");
+        let state = build_state(db.clone());
+        let headers = HeaderMap::new();
+
+        let deepseek_context = RequestContext::new(
+            &state,
+            &json!({ "model": "deepseek-v4-flash", "input": [] }),
+            &headers,
+            AppType::Codex,
+            "Codex",
+            "codex",
+        )
+        .await
+        .expect("build DeepSeek request context");
+        assert_eq!(deepseek_context.provider.id, "deepseek");
+        assert_eq!(deepseek_context.get_providers().len(), 1);
+        assert!(deepseek_context.suppress_provider_switch);
+        assert_eq!(
+            crate::settings::get_current_provider(&AppType::Codex).as_deref(),
+            Some("relay")
+        );
+
+        let gpt_context = RequestContext::new(
+            &state,
+            &json!({ "model": "gpt-5.6-sol", "input": [] }),
+            &headers,
+            AppType::Codex,
+            "Codex",
+            "codex",
+        )
+        .await
+        .expect("build GPT request context");
+        assert_eq!(gpt_context.provider.id, "relay");
+        assert!(!gpt_context.suppress_provider_switch);
+        assert_eq!(
+            crate::settings::get_current_provider(&AppType::Codex).as_deref(),
+            Some("relay")
+        );
+        assert_eq!(
+            db.get_current_provider("codex")
+                .expect("read database current provider")
+                .as_deref(),
+            Some("relay")
+        );
+    }
 
     #[test]
     fn extract_model_with_action() {

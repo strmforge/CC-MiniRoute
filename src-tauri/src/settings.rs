@@ -98,7 +98,7 @@ pub struct WebDavSyncStatus {
 }
 
 fn default_remote_root() -> String {
-    "cc-switch-sync".to_string()
+    "cc-miniroute-sync".to_string()
 }
 fn default_profile() -> String {
     "default".to_string()
@@ -336,7 +336,7 @@ pub struct CodexOfficialHistoryUnifyMigration {
 
 /// 应用设置结构
 ///
-/// 存储设备级别设置，保存在本地 `~/.cc-switch/settings.json`，不随数据库同步。
+/// 存储设备级别设置，保存在本地 `~/.cc-miniroute/settings.json`，不随数据库同步。
 /// 这确保了云同步场景下多设备可以独立运作。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -381,6 +381,11 @@ pub struct AppSettings {
     /// Opt-in: defaults to false so third-party switches cleanly overwrite auth.json.
     #[serde(default)]
     pub preserve_codex_official_auth_on_switch: bool,
+    /// Expose non-GPT Codex providers in the shared local-proxy model catalog.
+    /// The proxy then pins each selected non-GPT model to its declared provider.
+    /// Opt-in: disabled by default so upstream CC Switch routing is unchanged.
+    #[serde(default)]
+    pub enable_codex_multi_provider_bridge: bool,
     /// Run official Codex providers under the shared "custom" model_provider id
     /// so official sessions share one resume-history bucket with third-party
     /// providers. Opt-in: defaults to false.
@@ -519,6 +524,7 @@ impl Default for AppSettings {
             enable_failover_toggle: false,
             show_profile_switcher: true,
             preserve_codex_official_auth_on_switch: false,
+            enable_codex_multi_provider_bridge: false,
             unify_codex_session_history: false,
             unify_codex_migrate_existing: None,
             failover_confirmed: None,
@@ -559,7 +565,7 @@ impl AppSettings {
         // settings.json 保留用于旧版本迁移和无数据库场景
         Some(
             crate::config::get_home_dir()
-                .join(".cc-switch")
+                .join(crate::config::APP_CONFIG_DIR_NAME)
                 .join("settings.json"),
         )
     }

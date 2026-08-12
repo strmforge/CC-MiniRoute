@@ -34,7 +34,7 @@ const ALL_APPS: AppId[] = [
   "openclaw",
   "hermes",
 ];
-const STORAGE_KEY = "cc-switch-last-app";
+const STORAGE_KEY = "cc-miniroute-last-app";
 
 const APP_ICON_NAME: Record<AppId, string> = {
   claude: "claude",

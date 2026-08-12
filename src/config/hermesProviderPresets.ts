@@ -16,7 +16,7 @@ export const HERMES_PROVIDER_SOURCE_DICT = "providers_dict";
 
 /**
  * True when the provider was sourced from Hermes' v12+ `providers:` dict —
- * CC Switch renders those read-only and routes edits to Hermes Web UI.
+ * CC MiniRoute renders those read-only and routes edits to Hermes Web UI.
  */
 export function isHermesReadOnlyProvider(settingsConfig: unknown): boolean {
   if (!settingsConfig || typeof settingsConfig !== "object") {
@@ -1576,6 +1576,30 @@ export const hermesProviderPresets: HermesProviderPreset[] = [
         default: "deepseek/deepseek-v4-flash-0731",
         provider: "ppio",
       },
+    },
+  },
+  {
+    name: "JieKou AI",
+    websiteUrl: "https://jiekou.ai/#model-library",
+    apiKeyUrl: "https://jiekou.ai/settings/key-management",
+    settingsConfig: {
+      name: "jiekou",
+      base_url: "https://api.jiekou.ai/openai/v1",
+      api_key: "",
+      api_mode: "chat_completions",
+      models: [
+        {
+          id: "claude-fable-5",
+          name: "Claude Fable 5",
+          context_length: 1000000,
+        },
+      ],
+    },
+    category: "aggregator",
+    icon: "jiekou",
+    iconColor: "#000000",
+    suggestedDefaults: {
+      model: { default: "claude-fable-5", provider: "jiekou" },
     },
   },
 ];

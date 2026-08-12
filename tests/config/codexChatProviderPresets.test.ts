@@ -114,6 +114,48 @@ const expectedChatPresets = new Map<
 ]);
 
 describe("Codex Chat provider presets", () => {
+  it("keeps every vendor-official preset on an explicit protocol and model catalog", () => {
+    const vendorOfficialPresets = codexProviderPresets.filter(
+      (preset) => preset.category === "cn_official",
+    );
+
+    expect(vendorOfficialPresets.length).toBeGreaterThan(10);
+    for (const preset of vendorOfficialPresets) {
+      expect(
+        preset.apiFormat,
+        `${preset.name} must explicitly choose native Responses or a conversion protocol`,
+      ).toMatch(/^(openai_responses|openai_chat|anthropic)$/);
+      expect(
+        preset.modelCatalog?.length,
+        `${preset.name} must declare the models it owns for exact bridge routing`,
+      ).toBeGreaterThan(0);
+    }
+  });
+
+  it("keeps OpenAI login and Azure deployment semantics separate", () => {
+    const openAi = codexProviderPresets.find(
+      (preset) => preset.name === "OpenAI Official",
+    );
+    const azure = codexProviderPresets.find(
+      (preset) => preset.name === "Azure OpenAI",
+    );
+
+    expect(openAi).toMatchObject({
+      category: "official",
+      isOfficial: true,
+      auth: {},
+      config: "",
+    });
+    expect(openAi?.apiFormat).toBeUndefined();
+
+    expect(azure).toMatchObject({
+      category: "third_party",
+      isOfficial: true,
+      apiFormat: "openai_responses",
+    });
+    expect(azure?.modelCatalog).toBeUndefined();
+  });
+
   it("enables session-based prompt cache routing for Kimi Coding", () => {
     const preset = codexProviderPresets.find(
       (item) => item.name === "Kimi For Coding",
@@ -217,6 +259,33 @@ describe("Codex Chat provider presets", () => {
       ).toEqual(expected.contextWindows);
       // 原生（直连）不走 Chat 转换，因此不需要 codexChatReasoning。
       expect(preset?.codexChatReasoning).toBeUndefined();
+    }
+  });
+
+  it("keeps official per-model reasoning capabilities for native Codex presets", () => {
+    for (const name of ["MiniMax", "MiniMax en"]) {
+      const preset = codexProviderPresets.find((item) => item.name === name);
+      expect(preset?.modelCatalog?.[0]).toMatchObject({
+        model: "MiniMax-M3",
+        defaultReasoningLevel: "high",
+        supportedReasoningLevels: [
+          { effort: "none", description: "Think-Off" },
+          { effort: "high", description: "Deep" },
+        ],
+      });
+    }
+
+    for (const name of ["Xiaomi MiMo", "Xiaomi MiMo Token Plan (China)"]) {
+      const preset = codexProviderPresets.find((item) => item.name === name);
+      for (const model of preset?.modelCatalog ?? []) {
+        expect(model).toMatchObject({
+          defaultReasoningLevel: "high",
+          supportedReasoningLevels: [
+            { effort: "none", description: "Disable Thinking" },
+            { effort: "high", description: "Enabled Thinking" },
+          ],
+        });
+      }
     }
   });
 });

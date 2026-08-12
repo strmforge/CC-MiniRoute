@@ -126,6 +126,10 @@ pub struct RequestForwarder {
     app_handle: Option<tauri::AppHandle>,
     /// 请求开始时的"当前供应商 ID"（用于判断是否需要同步 UI/托盘）
     current_provider_id_at_start: String,
+    /// True for exact non-GPT model-owner routing. The actual provider remains
+    /// visible in runtime status, but success must not change the selected GPT
+    /// provider, tray target, or live configuration.
+    suppress_provider_switch: bool,
     /// 代理会话 ID（用于 Gemini Native shadow replay）
     session_id: String,
     /// Session ID 是否由客户端提供；生成值不能作为上游缓存身份。
@@ -205,6 +209,7 @@ impl RequestForwarder {
         failover_manager: Arc<FailoverSwitchManager>,
         app_handle: Option<tauri::AppHandle>,
         current_provider_id_at_start: String,
+        suppress_provider_switch: bool,
         session_id: String,
         session_client_provided: bool,
         streaming_first_byte_timeout: u64,
@@ -226,6 +231,7 @@ impl RequestForwarder {
             failover_manager,
             app_handle,
             current_provider_id_at_start,
+            suppress_provider_switch,
             session_id,
             session_client_provided,
             rectifier_config,
@@ -510,8 +516,8 @@ impl RequestForwarder {
                         let mut status = self.status.write().await;
                         status.success_requests += 1;
                         status.last_error = None;
-                        let should_switch =
-                            self.current_provider_id_at_start.as_str() != provider.id.as_str();
+                        let should_switch = !self.suppress_provider_switch
+                            && self.current_provider_id_at_start.as_str() != provider.id.as_str();
                         if should_switch {
                             status.failover_count += 1;
 
@@ -613,8 +619,8 @@ impl RequestForwarder {
                                         let mut status = self.status.write().await;
                                         status.success_requests += 1;
                                         status.last_error = None;
-                                        let should_switch =
-                                            self.current_provider_id_at_start.as_str()
+                                        let should_switch = !self.suppress_provider_switch
+                                            && self.current_provider_id_at_start.as_str()
                                                 != provider.id.as_str();
                                         if should_switch {
                                             status.failover_count += 1;
@@ -759,8 +765,8 @@ impl RequestForwarder {
                                             let mut status = self.status.write().await;
                                             status.success_requests += 1;
                                             status.last_error = None;
-                                            let should_switch =
-                                                self.current_provider_id_at_start.as_str()
+                                            let should_switch = !self.suppress_provider_switch
+                                                && self.current_provider_id_at_start.as_str()
                                                     != provider.id.as_str();
                                             if should_switch {
                                                 status.failover_count += 1;
@@ -923,8 +929,8 @@ impl RequestForwarder {
                                         let mut status = self.status.write().await;
                                         status.success_requests += 1;
                                         status.last_error = None;
-                                        let should_switch =
-                                            self.current_provider_id_at_start.as_str()
+                                        let should_switch = !self.suppress_provider_switch
+                                            && self.current_provider_id_at_start.as_str()
                                                 != provider.id.as_str();
                                         if should_switch {
                                             status.failover_count += 1;
@@ -3632,6 +3638,7 @@ mod tests {
             failover_manager: Arc::new(FailoverSwitchManager::new(db)),
             app_handle: None,
             current_provider_id_at_start: String::new(),
+            suppress_provider_switch: false,
             session_id: String::new(),
             session_client_provided: false,
             rectifier_config: RectifierConfig::default(),

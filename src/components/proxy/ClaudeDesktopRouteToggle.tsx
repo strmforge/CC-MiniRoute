@@ -1,5 +1,6 @@
 import { Loader2, Radio } from "lucide-react";
 import { toast } from "sonner";
+import { DEFAULT_PROXY_PORT } from "@/config/brand";
 import { useTranslation } from "react-i18next";
 import { Switch } from "@/components/ui/switch";
 import { useProxyStatus } from "@/hooks/useProxyStatus";
@@ -31,7 +32,7 @@ export function ClaudeDesktopRouteToggle({
       takeoverStatus?.grokbuild,
   );
   const routeAddress = status?.address ?? "127.0.0.1";
-  const routePort = status?.port ?? 15721;
+  const routePort = status?.port ?? DEFAULT_PROXY_PORT;
 
   const handleToggle = async (checked: boolean) => {
     try {

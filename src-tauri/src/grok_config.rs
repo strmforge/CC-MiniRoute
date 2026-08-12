@@ -501,12 +501,12 @@ context_window = 500000
 
         let updated = apply_proxy_takeover(
             valid_config(),
-            "http://127.0.0.1:15721/grokbuild/v1",
+            "http://127.0.0.1:15731/grokbuild/v1",
             "PROXY_MANAGED",
         )
         .expect("takeover config");
         let selected = extract_model_config(&updated).expect("updated selected model");
-        assert_eq!(selected.base_url, "http://127.0.0.1:15721/grokbuild/v1");
+        assert_eq!(selected.base_url, "http://127.0.0.1:15731/grokbuild/v1");
         assert_eq!(selected.api_key.as_deref(), Some("PROXY_MANAGED"));
         assert!(has_proxy_placeholder(&updated, "PROXY_MANAGED"));
     }
@@ -519,7 +519,7 @@ context_window = 500000
         );
         let updated = apply_proxy_takeover(
             &direct_config,
-            "http://127.0.0.1:15721/grokbuild/v1",
+            "http://127.0.0.1:15731/grokbuild/v1",
             "PROXY_MANAGED",
         )
         .expect("takeover config");

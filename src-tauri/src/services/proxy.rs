@@ -13,6 +13,7 @@ use crate::services::provider::{
     build_effective_settings_with_common_config, write_live_with_common_config,
 };
 use serde_json::{json, Map, Value};
+use std::collections::{BTreeMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
 use tauri::Emitter;
@@ -384,7 +385,7 @@ impl ProxyService {
         }
         let (_, proxy_codex_base_url) = self.build_proxy_urls().await?;
 
-        Self::apply_codex_takeover_fields_for_provider(
+        self.apply_codex_takeover_fields_for_provider(
             &mut effective_settings,
             &proxy_codex_base_url,
             provider,
@@ -1385,7 +1386,7 @@ impl ProxyService {
             // 跳过已被代理接管的 Live：避免把代理占位符当作"原始 Live"存进备份槽。
             // 否则下次 start_with_takeover 在异常历史状态下（Live 已是占位符）再次
             // 调用本函数，会用代理配置覆盖一个原本正常的备份；之后 stop 恢复时
-            // 即便走到备份路径也会把代理占位符再写回 Live，永久卡在 127.0.0.1:15721。
+            // 即便走到备份路径也会把代理占位符再写回 Live，永久卡在 127.0.0.1:15731。
             if Self::live_has_proxy_placeholder_for_app(&AppType::Claude, &config) {
                 log::warn!("claude Live 已被代理接管，不备份（避免把代理配置固化进备份槽）；下次 stop 会从 SSOT 重建 Live");
             } else {
@@ -1571,7 +1572,7 @@ impl ProxyService {
         // Codex: project the selected provider through the local Responses endpoint.
         if let Ok(mut live_config) = self.read_codex_live() {
             let codex_provider = self.require_current_provider_for_app(&AppType::Codex)?;
-            Self::apply_codex_takeover_fields_for_provider(
+            self.apply_codex_takeover_fields_for_provider(
                 &mut live_config,
                 &proxy_codex_base_url,
                 &codex_provider,
@@ -1633,7 +1634,7 @@ impl ProxyService {
             AppType::Codex => {
                 let mut live_config = self.read_codex_live()?;
                 let codex_provider = self.require_current_provider_for_app(&AppType::Codex)?;
-                Self::apply_codex_takeover_fields_for_provider(
+                self.apply_codex_takeover_fields_for_provider(
                     &mut live_config,
                     &proxy_codex_base_url,
                     &codex_provider,
@@ -1710,7 +1711,7 @@ impl ProxyService {
             AppType::Codex => {
                 if let Ok(mut live_config) = self.read_codex_live() {
                     let codex_provider = self.require_current_provider_for_app(&AppType::Codex)?;
-                    Self::apply_codex_takeover_fields_for_provider(
+                    self.apply_codex_takeover_fields_for_provider(
                         &mut live_config,
                         &proxy_codex_base_url,
                         &codex_provider,
@@ -1847,7 +1848,7 @@ impl ProxyService {
 
             // 备份若是代理占位符（异常历史：上次 stop 失败导致 Live 留在了代理状态，
             // 下次接管时又被错误地备份成"原始 Live"），不能直接用 — 否则 stop 后
-            // Live 永远卡在 127.0.0.1:15721。落到下面的 SSOT 兜底重建。
+            // Live 永远卡在 127.0.0.1:15731。落到下面的 SSOT 兜底重建。
             if Self::live_has_proxy_placeholder_for_app(app_type, &config) {
                 log::warn!(
                     "{app_type_str} 备份本身已是代理占位符（异常历史状态），跳过备份，改走 SSOT 重建 Live"
@@ -2778,6 +2779,7 @@ impl ProxyService {
     }
 
     fn apply_codex_takeover_fields_for_provider(
+        &self,
         settings: &mut Value,
         proxy_base_url: &str,
         provider: &Provider,
@@ -2794,27 +2796,214 @@ impl ProxyService {
             Some(provider),
         )?;
         settings["config"] = json!(projected);
-        Self::attach_codex_model_catalog_from_provider(settings, Some(provider));
+        self.attach_codex_model_catalog_for_bridge(settings, provider)?;
         Ok(())
     }
 
-    fn attach_codex_model_catalog_from_provider(
+    fn attach_codex_model_catalog_for_bridge(
+        &self,
         live_config: &mut Value,
-        provider: Option<&Provider>,
-    ) {
-        let Some(provider) = provider else {
-            return;
+        selected_provider: &Provider,
+    ) -> Result<(), String> {
+        let model_catalog = if crate::settings::get_settings().enable_codex_multi_provider_bridge {
+            self.combined_codex_model_catalog(selected_provider)?
+        } else {
+            selected_provider
+                .settings_config
+                .get("modelCatalog")
+                .cloned()
+                .unwrap_or_else(|| json!({ "models": [] }))
         };
-
-        let model_catalog = provider
-            .settings_config
-            .get("modelCatalog")
-            .cloned()
-            .unwrap_or_else(|| json!({ "models": [] }));
 
         if let Some(root) = live_config.as_object_mut() {
             root.insert("modelCatalog".to_string(), model_catalog);
         }
+        Ok(())
+    }
+
+    fn combined_codex_model_catalog(&self, selected_provider: &Provider) -> Result<Value, String> {
+        let all_providers = self
+            .db
+            .get_all_providers(AppType::Codex.as_str())
+            .map_err(|e| format!("读取 Codex 供应商失败: {e}"))?;
+
+        let mut provider_by_id = BTreeMap::new();
+        let mut selected_provider = selected_provider.clone();
+        Self::ensure_codex_configured_model_in_catalog(&mut selected_provider);
+        let selected_provider_id = selected_provider.id.clone();
+        provider_by_id.insert(selected_provider_id.clone(), selected_provider);
+        for provider in all_providers.into_values() {
+            let mut provider = provider;
+            Self::ensure_codex_configured_model_in_catalog(&mut provider);
+            provider_by_id.insert(provider.id.clone(), provider);
+        }
+
+        let mut owners: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for provider in provider_by_id.values() {
+            for model_id in Self::codex_non_gpt_model_ids(provider) {
+                owners
+                    .entry(model_id.to_ascii_lowercase())
+                    .or_default()
+                    .push(provider.id.clone());
+            }
+        }
+
+        let ambiguous: HashSet<String> = owners
+            .iter()
+            .filter_map(|(model, ids)| (ids.len() > 1).then_some(model.clone()))
+            .collect();
+        for (model, ids) in owners.iter().filter(|(_, ids)| ids.len() > 1) {
+            log::warn!(
+                "Codex multi-provider bridge omitted ambiguous model '{}' declared by {:?}",
+                model,
+                ids
+            );
+        }
+
+        let mut catalogs = Vec::new();
+        for provider in provider_by_id.values() {
+            let mut catalog_settings = provider.settings_config.clone();
+            Self::retain_codex_bridge_models(
+                &mut catalog_settings,
+                &ambiguous,
+                provider.id == selected_provider_id,
+            );
+            if catalog_settings
+                .get("modelCatalog")
+                .and_then(|catalog| catalog.get("models"))
+                .and_then(|models| models.as_array())
+                .is_none_or(Vec::is_empty)
+            {
+                continue;
+            }
+            let config_text = catalog_settings
+                .get("config")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let profile = crate::proxy::providers::resolve_codex_catalog_tool_profile(provider);
+            catalogs.push((catalog_settings, config_text, profile));
+        }
+
+        let catalog_refs: Vec<(&Value, &str, crate::codex_config::CodexCatalogToolProfile)> =
+            catalogs
+                .iter()
+                .map(|(settings, config, profile)| (settings, config.as_str(), *profile))
+                .collect();
+        crate::codex_config::codex_model_catalog_from_provider_catalogs(catalog_refs)
+            .map_err(|e| format!("生成 Codex 联合模型目录失败: {e}"))
+            .and_then(|catalog| {
+                let catalog = catalog.unwrap_or_else(|| json!({ "models": [] }));
+                crate::codex_config::codex_model_catalog_with_default_gpt_entries(&catalog)
+                    .map_err(|e| format!("补全 Codex GPT 模型目录失败: {e}"))
+            })
+    }
+
+    fn codex_non_gpt_model_ids(provider: &Provider) -> Vec<String> {
+        let mut ids = Vec::new();
+        if let Some(models) = provider
+            .settings_config
+            .get("modelCatalog")
+            .and_then(|catalog| catalog.get("models"))
+            .and_then(Value::as_array)
+        {
+            for model in models {
+                if let Some(model_id) = model
+                    .get("model")
+                    .or_else(|| model.get("slug"))
+                    .or_else(|| model.get("id"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|model| !model.is_empty())
+                {
+                    if !crate::codex_config::is_codex_openai_family_model(model_id) {
+                        ids.push(model_id.to_string());
+                    }
+                }
+            }
+        }
+        if let Some(model_id) = crate::proxy::providers::codex_provider_upstream_model(provider)
+            .map(|model| model.trim().to_string())
+            .filter(|model| !model.is_empty())
+        {
+            if !crate::codex_config::is_codex_openai_family_model(&model_id) {
+                ids.push(model_id);
+            }
+        }
+        ids.sort();
+        ids.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+        ids
+    }
+
+    fn ensure_codex_configured_model_in_catalog(provider: &mut Provider) {
+        let Some(model_id) = crate::proxy::providers::codex_provider_upstream_model(provider)
+            .map(|model| model.trim().to_string())
+            .filter(|model| !model.is_empty())
+        else {
+            return;
+        };
+
+        let root = provider
+            .settings_config
+            .as_object_mut()
+            .expect("Codex provider settings should be a JSON object");
+        let catalog = root
+            .entry("modelCatalog".to_string())
+            .or_insert_with(|| json!({ "models": [] }));
+        if !catalog.is_object() {
+            *catalog = json!({ "models": [] });
+        }
+        let models = catalog
+            .as_object_mut()
+            .expect("normalized Codex model catalog should be an object")
+            .entry("models".to_string())
+            .or_insert_with(|| json!([]));
+        if !models.is_array() {
+            *models = json!([]);
+        }
+        let models = models
+            .as_array_mut()
+            .expect("normalized Codex models should be an array");
+        let already_present = models.iter().any(|entry| {
+            crate::codex_config::codex_model_catalog_entry_id(entry)
+                .is_some_and(|existing| existing.eq_ignore_ascii_case(&model_id))
+        });
+        if !already_present {
+            models.push(json!({
+                "model": model_id,
+                "displayName": model_id,
+                "contextWindow": 128_000
+            }));
+        }
+    }
+
+    fn retain_codex_bridge_models(
+        settings: &mut Value,
+        ambiguous: &HashSet<String>,
+        keep_gpt_models: bool,
+    ) {
+        let Some(models) = settings
+            .get_mut("modelCatalog")
+            .and_then(|catalog| catalog.get_mut("models"))
+            .and_then(Value::as_array_mut)
+        else {
+            return;
+        };
+        models.retain(|model| {
+            let Some(model_id) = model
+                .get("model")
+                .or_else(|| model.get("slug"))
+                .or_else(|| model.get("id"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|model| !model.is_empty())
+            else {
+                return false;
+            };
+            let is_gpt = crate::codex_config::is_codex_openai_family_model(model_id);
+            (keep_gpt_models || !is_gpt)
+                && (is_gpt || !ambiguous.contains(&model_id.to_ascii_lowercase()))
+        });
     }
 
     fn read_claude_live(&self) -> Result<Value, String> {
@@ -2897,14 +3086,30 @@ impl ProxyService {
         let config_str = config.get("config").and_then(|v| v.as_str());
         let profile = crate::proxy::providers::resolve_codex_catalog_tool_profile(provider);
 
-        crate::codex_config::write_codex_provider_live_with_catalog(
-            config,
-            provider.category.as_deref(),
-            auth,
-            config_str,
-            profile,
-        )
-        .map_err(|e| format!("写入 Codex 配置失败: {e}"))
+        if crate::settings::get_settings().enable_codex_multi_provider_bridge {
+            let config_text = config_str.unwrap_or("");
+            let catalog = self.combined_codex_model_catalog(provider)?;
+            let prepared = crate::codex_config::prepare_codex_config_text_with_prebuilt_catalog(
+                &catalog,
+                config_text,
+            )
+            .map_err(|e| format!("写入 Codex 配置失败: {e}"))?;
+            crate::codex_config::write_codex_live_for_provider(
+                provider.category.as_deref(),
+                auth,
+                Some(&prepared),
+            )
+            .map_err(|e| format!("写入 Codex 配置失败: {e}"))
+        } else {
+            crate::codex_config::write_codex_provider_live_with_catalog(
+                config,
+                provider.category.as_deref(),
+                auth,
+                config_str,
+                profile,
+            )
+            .map_err(|e| format!("写入 Codex 配置失败: {e}"))
+        }
     }
 
     fn codex_auth_has_proxy_placeholder(auth: &Value) -> bool {
@@ -2932,9 +3137,18 @@ impl ProxyService {
                 .map(crate::proxy::providers::resolve_codex_catalog_tool_profile)
                 .unwrap_or(crate::codex_config::CodexCatalogToolProfile::ProxyChat);
             let prepared_config =
-                crate::codex_config::prepare_codex_live_config_text_with_optional_catalog(
-                    config, config_str, profile,
-                )
+                if crate::settings::get_settings().enable_codex_multi_provider_bridge {
+                    let catalog = config.get("modelCatalog").ok_or_else(|| {
+                        "Codex 联合模型目录缺失，已拒绝写入不完整的接管配置".to_string()
+                    })?;
+                    crate::codex_config::prepare_codex_config_text_with_prebuilt_catalog(
+                        catalog, config_str,
+                    )
+                } else {
+                    crate::codex_config::prepare_codex_live_config_text_with_optional_catalog(
+                        config, config_str, profile,
+                    )
+                }
                 .map_err(|e| format!("写入 Codex 配置失败: {e}"))?;
             let live_config = if official_passthrough {
                 prepared_config
@@ -3300,17 +3514,215 @@ mod tests {
         std::fs::write(
             codex_dir.join("models_cache.json"),
             serde_json::to_string(&serde_json::json!({
-                "models": [{
-                    "slug": "gpt-5.5",
-                    "display_name": "GPT-5.5",
-                    "model_messages": { "instructions_template": "t" },
-                    "additional_speed_tiers": [],
-                    "context_window": 128000
-                }]
+                "models": [
+                    {
+                        "slug": "gpt-5.5",
+                        "display_name": "GPT-5.5",
+                        "model_messages": { "instructions_template": "t" },
+                        "additional_speed_tiers": [],
+                        "context_window": 128000
+                    },
+                    {
+                        "slug": "gpt-5.6-sol",
+                        "display_name": "GPT-5.6 Sol",
+                        "model_messages": { "instructions_template": "t" },
+                        "default_reasoning_level": "high",
+                        "supported_reasoning_levels": [
+                            { "effort": "low", "description": "Low" },
+                            { "effort": "high", "description": "High" },
+                            { "effort": "max", "description": "Max" }
+                        ],
+                        "additional_speed_tiers": [{
+                            "service_tier": "priority",
+                            "display_name": "Fast"
+                        }],
+                        "context_window": 272000
+                    }
+                ]
             }))
             .expect("serialize models_cache"),
         )
         .expect("write models_cache.json");
+    }
+
+    fn native_codex_provider(
+        id: &str,
+        name: &str,
+        model: &str,
+        base_url: &str,
+        model_catalog: Value,
+    ) -> Provider {
+        let mut provider = Provider::with_id(
+            id.to_string(),
+            name.to_string(),
+            json!({
+                "auth": { "OPENAI_API_KEY": format!("{id}-key") },
+                "config": format!(
+                    "model_provider = \"{id}\"\nmodel = \"{model}\"\n\n[model_providers.{id}]\nname = \"{name}\"\nbase_url = \"{base_url}\"\nwire_api = \"responses\"\nrequires_openai_auth = true\n"
+                ),
+                "modelCatalog": { "models": model_catalog }
+            }),
+            None,
+        );
+        provider.category = Some("cn_official".to_string());
+        provider.meta = Some(ProviderMeta {
+            api_format: Some("openai_responses".to_string()),
+            ..Default::default()
+        });
+        provider
+    }
+
+    #[test]
+    #[serial]
+    fn combined_catalog_keeps_gpt_and_official_vendor_capabilities() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        seed_codex_model_template();
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let service = ProxyService::new(db.clone());
+
+        let mut relay = Provider::with_id(
+            "relay".to_string(),
+            "GPT Relay".to_string(),
+            json!({
+                "auth": { "OPENAI_API_KEY": "relay-key" },
+                "config": r#"model_provider = "relay"
+model = "gpt-5.6-sol"
+
+[model_providers.relay]
+name = "GPT Relay"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+"#,
+                "modelCatalog": {
+                    "models": [{
+                        "model": "gpt-5.6-sol",
+                        "displayName": "Synthetic relay row",
+                        "supportedReasoningLevels": [
+                            { "effort": "high", "description": "Relay high only" }
+                        ]
+                    }]
+                }
+            }),
+            None,
+        );
+        relay.meta = Some(ProviderMeta {
+            api_format: Some("openai_responses".to_string()),
+            ..Default::default()
+        });
+
+        let deepseek = native_codex_provider(
+            "deepseek",
+            "DeepSeek Official",
+            "deepseek-v4-flash",
+            "https://api.deepseek.com",
+            json!([
+                {
+                    "model": "deepseek-v4-flash",
+                    "displayName": "DeepSeek V4 Flash",
+                    "contextWindow": 1_048_576
+                },
+                {
+                    "model": "deepseek-v4-pro",
+                    "displayName": "DeepSeek V4 Pro",
+                    "contextWindow": 1_048_576
+                }
+            ]),
+        );
+        let minimax = native_codex_provider(
+            "minimax",
+            "MiniMax Official",
+            "MiniMax-M3",
+            "https://api.minimaxi.com/v1",
+            json!([{
+                "model": "MiniMax-M3",
+                "contextWindow": 1_000_000,
+                "supportsParallelToolCalls": true,
+                "inputModalities": ["text", "image"],
+                "defaultReasoningLevel": "high",
+                "supportedReasoningLevels": [
+                    { "effort": "none", "description": "Think-Off" },
+                    { "effort": "high", "description": "Deep" }
+                ]
+            }]),
+        );
+        let mimo = native_codex_provider(
+            "mimo",
+            "MiMo Official",
+            "mimo-v2.5-pro",
+            "https://api.xiaomimimo.com/v1",
+            json!([
+                {
+                    "model": "mimo-v2.5-pro",
+                    "contextWindow": 1_048_576,
+                    "inputModalities": ["text"],
+                    "defaultReasoningLevel": "high",
+                    "supportedReasoningLevels": [
+                        { "effort": "none", "description": "Disable Thinking" },
+                        { "effort": "high", "description": "Enabled Thinking" }
+                    ]
+                },
+                {
+                    "model": "mimo-v2.5",
+                    "contextWindow": 1_048_576,
+                    "inputModalities": ["text", "image"],
+                    "defaultReasoningLevel": "high",
+                    "supportedReasoningLevels": [
+                        { "effort": "none", "description": "Disable Thinking" },
+                        { "effort": "high", "description": "Enabled Thinking" }
+                    ]
+                }
+            ]),
+        );
+
+        for provider in [&relay, &deepseek, &minimax, &mimo] {
+            db.save_provider("codex", provider)
+                .expect("save Codex provider");
+        }
+
+        let catalog = service
+            .combined_codex_model_catalog(&relay)
+            .expect("combined model catalog");
+        let models = catalog["models"].as_array().expect("models array");
+        let by_slug = |slug: &str| {
+            models
+                .iter()
+                .find(|entry| entry["slug"].as_str() == Some(slug))
+                .unwrap_or_else(|| panic!("missing model {slug}"))
+        };
+        let efforts = |entry: &Value| {
+            entry["supported_reasoning_levels"]
+                .as_array()
+                .expect("reasoning levels")
+                .iter()
+                .filter_map(|level| level["effort"].as_str())
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        };
+
+        let gpt = by_slug("gpt-5.6-sol");
+        assert_eq!(gpt["display_name"], json!("GPT-5.6 Sol"));
+        assert_eq!(efforts(gpt), vec!["low", "high", "max"]);
+        assert_eq!(
+            gpt["additional_speed_tiers"][0]["service_tier"],
+            json!("priority")
+        );
+
+        let deepseek = by_slug("deepseek-v4-flash");
+        assert_eq!(efforts(deepseek), vec!["low", "high", "max"]);
+        assert_eq!(deepseek["apply_patch_tool_type"], json!("freeform"));
+
+        let minimax = by_slug("MiniMax-M3");
+        assert_eq!(efforts(minimax), vec!["none", "high"]);
+        assert_eq!(minimax["shell_type"], json!("shell_command"));
+        assert!(minimax.get("apply_patch_tool_type").is_none());
+
+        let mimo = by_slug("mimo-v2.5-pro");
+        assert_eq!(efforts(mimo), vec!["none", "high"]);
+        assert_eq!(mimo["input_modalities"], json!(["text"]));
+        assert!(mimo.get("apply_patch_tool_type").is_none());
     }
 
     #[test]
@@ -3334,7 +3746,7 @@ mod tests {
         let mut live_config = provider.settings_config.clone();
         ProxyService::apply_claude_takeover_fields_for_provider(
             &mut live_config,
-            "http://127.0.0.1:15721",
+            "http://127.0.0.1:15731",
             &provider,
         );
 
@@ -3391,7 +3803,7 @@ mod tests {
         });
         ProxyService::apply_claude_takeover_fields_for_provider(
             &mut live_config,
-            "http://127.0.0.1:15721",
+            "http://127.0.0.1:15731",
             &provider,
         );
 
@@ -3462,7 +3874,7 @@ mod tests {
         });
         ProxyService::apply_claude_takeover_fields_for_provider(
             &mut live_config,
-            "http://127.0.0.1:15721",
+            "http://127.0.0.1:15731",
             &provider,
         );
 
@@ -3509,7 +3921,7 @@ mod tests {
         });
         ProxyService::apply_claude_takeover_fields_for_provider(
             &mut live_config,
-            "http://127.0.0.1:15721",
+            "http://127.0.0.1:15731",
             &provider,
         );
 
@@ -3562,7 +3974,7 @@ mod tests {
         let mut live_config = provider.settings_config.clone();
         ProxyService::apply_claude_takeover_fields_for_provider(
             &mut live_config,
-            "http://127.0.0.1:15721",
+            "http://127.0.0.1:15731",
             &provider,
         );
 
@@ -3600,7 +4012,7 @@ mod tests {
         });
         ProxyService::apply_claude_takeover_fields_for_provider(
             &mut live_config,
-            "http://127.0.0.1:15721",
+            "http://127.0.0.1:15731",
             &provider,
         );
 
@@ -3633,7 +4045,7 @@ mod tests {
         let mut live_config = provider.settings_config.clone();
         ProxyService::apply_claude_takeover_fields_for_provider(
             &mut live_config,
-            "http://127.0.0.1:15721",
+            "http://127.0.0.1:15731",
             &provider,
         );
 
@@ -3672,7 +4084,7 @@ mod tests {
         });
         ProxyService::apply_claude_takeover_fields_for_provider(
             &mut live_config,
-            "http://127.0.0.1:15721",
+            "http://127.0.0.1:15731",
             &provider,
         );
 
@@ -3710,7 +4122,7 @@ mod tests {
         });
         ProxyService::apply_claude_takeover_fields_for_provider(
             &mut live_config,
-            "http://127.0.0.1:15721",
+            "http://127.0.0.1:15731",
             &provider,
         );
 
@@ -3751,7 +4163,7 @@ mod tests {
         });
         ProxyService::apply_claude_takeover_fields_for_provider(
             &mut live_config,
-            "http://127.0.0.1:15721",
+            "http://127.0.0.1:15731",
             &provider,
         );
 
@@ -3774,7 +4186,7 @@ mod tests {
             }
         });
 
-        ProxyService::apply_claude_takeover_fields(&mut live_config, "http://127.0.0.1:15721");
+        ProxyService::apply_claude_takeover_fields(&mut live_config, "http://127.0.0.1:15731");
 
         assert_eq!(
             live_config
@@ -3916,7 +4328,7 @@ model = "gpt-5-codex"
 
 [model_providers.rightcode]
 name = "RightCode"
-base_url = "http://127.0.0.1:15721/v1"
+base_url = "http://127.0.0.1:15731/v1"
 wire_api = "responses"
 "#
         });
@@ -4892,7 +5304,7 @@ model = "deepseek-v4-flash"
 
 [model_providers.deepseek]
 name = "DeepSeek"
-base_url = "http://127.0.0.1:15721/v1"
+base_url = "http://127.0.0.1:15731/v1"
 wire_api = "responses"
 experimental_bearer_token = "PROXY_MANAGED"
 "#,
@@ -4924,7 +5336,7 @@ experimental_bearer_token = "PROXY_MANAGED"
             "cleanup should remove config.toml proxy bearer placeholder"
         );
         assert!(
-            !live_config.contains("http://127.0.0.1:15721"),
+            !live_config.contains("http://127.0.0.1:15731"),
             "cleanup should remove local proxy base_url"
         );
     }
@@ -4988,7 +5400,7 @@ model = "gpt-5-codex"
 
 [model_providers.rightcode]
 name = "RightCode"
-base_url = "http://127.0.0.1:15721/v1"
+base_url = "http://127.0.0.1:15731/v1"
 wire_api = "responses"
 "#
         });
@@ -5528,7 +5940,7 @@ model = "gpt-5.1-codex"
         service
             .write_claude_live(&json!({
                 "env": {
-                    "ANTHROPIC_BASE_URL": "http://127.0.0.1:15721",
+                    "ANTHROPIC_BASE_URL": "http://127.0.0.1:15731",
                     "ANTHROPIC_API_KEY": PROXY_TOKEN_PLACEHOLDER,
                     "ANTHROPIC_MODEL": "stale-model",
                     "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME": "Stale Sonnet",
@@ -5560,7 +5972,7 @@ model = "gpt-5.1-codex"
             live.get("env")
                 .and_then(|env| env.get("ANTHROPIC_BASE_URL"))
                 .and_then(|v| v.as_str()),
-            Some("http://127.0.0.1:15721"),
+            Some("http://127.0.0.1:15731"),
             "takeover proxy URL should remain active"
         );
         assert!(
@@ -6073,7 +6485,7 @@ model = "gpt-5.4"
 
 [model_providers.rightcode]
 name = "RightCode"
-base_url = "http://127.0.0.1:15721/v1"
+base_url = "http://127.0.0.1:15731/v1"
 wire_api = "responses"
 requires_openai_auth = true
 "#
@@ -6143,7 +6555,7 @@ requires_openai_auth = true
                 .and_then(|v| v.get("aihubmix"))
                 .and_then(|v| v.get("base_url"))
                 .and_then(|v| v.as_str()),
-            Some("http://127.0.0.1:15721/v1"),
+            Some("http://127.0.0.1:15731/v1"),
             "taken-over live config should stay pointed at the local proxy"
         );
 
@@ -6248,7 +6660,7 @@ model = "responses-model"
 
 [model_providers.stable]
 name = "Stable"
-base_url = "http://127.0.0.1:15721/v1"
+base_url = "http://127.0.0.1:15731/v1"
 wire_api = "responses"
 requires_openai_auth = true
 "#
@@ -6285,7 +6697,7 @@ requires_openai_auth = true
                 .and_then(|v| v.get("deepseek"))
                 .and_then(|v| v.get("base_url"))
                 .and_then(|v| v.as_str()),
-            Some("http://127.0.0.1:15721/v1")
+            Some("http://127.0.0.1:15731/v1")
         );
         assert_eq!(
             parsed_live.get("model").and_then(|v| v.as_str()),
@@ -6502,7 +6914,7 @@ requires_openai_auth = true
         let catalog_path = crate::codex_config::get_codex_model_catalog_path();
         assert!(
             catalog_path.exists(),
-            "cc-switch-model-catalog.json must be created on provider switch"
+            "cc-miniroute-model-catalog.json must be created on provider switch"
         );
         let catalog_text = std::fs::read_to_string(&catalog_path).expect("read catalog json");
         let catalog: serde_json::Value =
@@ -6979,7 +7391,7 @@ requires_openai_auth = true
         let corrupted_backup = serde_json::to_string(&json!({
             "env": {
                 "ANTHROPIC_AUTH_TOKEN": PROXY_TOKEN_PLACEHOLDER,
-                "ANTHROPIC_BASE_URL": "http://127.0.0.1:15721"
+                "ANTHROPIC_BASE_URL": "http://127.0.0.1:15731"
             }
         }))
         .expect("serialize corrupted backup");
@@ -6992,7 +7404,7 @@ requires_openai_auth = true
             .write_claude_live(&json!({
                 "env": {
                     "ANTHROPIC_AUTH_TOKEN": PROXY_TOKEN_PLACEHOLDER,
-                    "ANTHROPIC_BASE_URL": "http://127.0.0.1:15721"
+                    "ANTHROPIC_BASE_URL": "http://127.0.0.1:15731"
                 }
             }))
             .expect("seed taken-over live file");
@@ -7074,7 +7486,7 @@ requires_openai_auth = true
             .write_claude_live(&json!({
                 "env": {
                     "ANTHROPIC_AUTH_TOKEN": PROXY_TOKEN_PLACEHOLDER,
-                    "ANTHROPIC_BASE_URL": "http://127.0.0.1:15721"
+                    "ANTHROPIC_BASE_URL": "http://127.0.0.1:15731"
                 }
             }))
             .expect("seed taken-over live file");
@@ -7142,7 +7554,7 @@ requires_openai_auth = true
             .write_claude_live(&json!({
                 "env": {
                     "ANTHROPIC_AUTH_TOKEN": PROXY_TOKEN_PLACEHOLDER,
-                    "ANTHROPIC_BASE_URL": "http://127.0.0.1:15721"
+                    "ANTHROPIC_BASE_URL": "http://127.0.0.1:15731"
                 }
             }))
             .expect("seed claude live");
@@ -7154,7 +7566,7 @@ requires_openai_auth = true
 
 [model_providers.custom]
 name = "Custom"
-base_url = "http://127.0.0.1:15721/v1"
+base_url = "http://127.0.0.1:15731/v1"
 wire_api = "chat"
 experimental_bearer_token = "PROXY_MANAGED"
 "#,
@@ -7309,7 +7721,7 @@ experimental_bearer_token = "PROXY_MANAGED"
             provider_a.settings_config["config"]
                 .as_str()
                 .expect("provider config"),
-            "http://127.0.0.1:15721/grokbuild/v1",
+            "http://127.0.0.1:15731/grokbuild/v1",
             PROXY_TOKEN_PLACEHOLDER,
         )
         .expect("build takeover config");

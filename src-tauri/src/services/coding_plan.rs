@@ -254,7 +254,9 @@ fn parse_zhipu_token_tiers(data: &serde_json::Value) -> Vec<QuotaTier> {
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             // 大小写不敏感比较：上游若把 "TOKENS_LIMIT" 改成小写或驼峰，依然能识别
-            if !limit_type.eq_ignore_ascii_case("TOKENS_LIMIT") {
+            if !(limit_type.eq_ignore_ascii_case("TOKENS_LIMIT")
+                || limit_type.eq_ignore_ascii_case("CREDIT_LIMIT"))
+            {
                 continue;
             }
             let percentage = limit_item
@@ -1380,6 +1382,24 @@ mod tests {
         assert_eq!(tiers.len(), 1);
         assert_eq!(tiers[0].name, TIER_FIVE_HOUR);
         assert_eq!(tiers[0].utilization, 2.0);
+    }
+
+    #[test]
+    fn zhipu_credit_limit_entries_are_parsed() {
+        let data = json!({
+            "limits": [
+                { "type": "CREDIT_LIMIT", "unit": 3, "number": 5, "percentage": 17.0 },
+                { "type": "credit_limit", "unit": 6, "number": 1, "percentage": 29.0 },
+                { "type": "TIME_LIMIT", "percentage": 91.0 }
+            ]
+        });
+
+        let tiers = parse_zhipu_token_tiers(&data);
+        assert_eq!(tiers.len(), 2);
+        assert_eq!(tiers[0].name, TIER_FIVE_HOUR);
+        assert_eq!(tiers[0].utilization, 17.0);
+        assert_eq!(tiers[1].name, TIER_WEEKLY_LIMIT);
+        assert_eq!(tiers[1].utilization, 29.0);
     }
 
     #[test]
