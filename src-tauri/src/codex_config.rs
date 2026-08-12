@@ -916,9 +916,9 @@ fn find_codex_model_template(catalog: &Value) -> Option<Value> {
 fn load_codex_gpt_catalog_entries() -> Result<Vec<Value>, AppError> {
     #[cfg(not(test))]
     {
-        return CODEX_GPT_CATALOG_ENTRIES_CACHE
+        CODEX_GPT_CATALOG_ENTRIES_CACHE
             .get_or_try_init(load_codex_gpt_catalog_entries_uncached)
-            .cloned();
+            .cloned()
     }
     #[cfg(test)]
     load_codex_gpt_catalog_entries_uncached()
