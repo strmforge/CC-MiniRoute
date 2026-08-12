@@ -205,23 +205,53 @@ jobs:
 
       - name: Compile backend tests with native temp
         # link.exe/mt.exe cannot create manifests when TEMP points at a WSL UNC path.
-        run: cargo test --lib --manifest-path src-tauri/Cargo.toml --no-run
+        id: compile-wsl-contract
+        shell: pwsh
+        run: |
+          $messages = & cargo test --lib --manifest-path src-tauri/Cargo.toml --no-run --message-format=json
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+          $testExecutable = @(
+            foreach ($line in $messages) {
+              try {
+                $message = $line | ConvertFrom-Json -ErrorAction Stop
+              } catch {
+                continue
+              }
+              if (
+                $message.reason -eq "compiler-artifact" -and
+                $message.target.name -eq "cc_miniroute_lib" -and
+                $message.profile.test -and
+                $message.executable
+              ) {
+                $message.executable
+              }
+            }
+          )
+          if ($testExecutable.Count -ne 1) {
+            throw "Expected one cc_miniroute_lib test executable, found $($testExecutable.Count)"
+          }
+          "test_executable=$testExecutable" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Run Windows-to-WSL2 filesystem contract
         shell: pwsh
         run: |
+          $testExecutable = "${{ steps.compile-wsl-contract.outputs.test_executable }}"
+          if (-not (Test-Path -LiteralPath $testExecutable)) {
+            throw "Compiled test executable is unavailable: $testExecutable"
+          }
+          $testName = "config::tests::atomic_write_replaces_existing_wsl_unc_file"
+          # Cargo/MSVC compilation uses a native temp dir; only the already-built
+          # test process needs its temp dir on the WSL UNC filesystem.
           $env:TEMP = $env:CC_SWITCH_WSL_TEST_TEMP
           $env:TMP = $env:CC_SWITCH_WSL_TEST_TEMP
-          $testName = "config::tests::atomic_write_replaces_existing_wsl_unc_file"
-          $testList = cargo test --lib --manifest-path src-tauri/Cargo.toml -- --ignored --list
-          if ($LASTEXITCODE -ne 0) {
-            exit $LASTEXITCODE
-          }
+          $testList = & $testExecutable --ignored --list
           $expected = "${testName}: test"
           if ($testList -notcontains $expected) {
             throw "Expected ignored test was not discovered: $testName"
           }
-          cargo test --lib --manifest-path src-tauri/Cargo.toml $testName -- --ignored --exact --nocapture
+          & $testExecutable $testName --ignored --exact --nocapture
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
           }
