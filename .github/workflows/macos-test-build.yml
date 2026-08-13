@@ -73,7 +73,10 @@ jobs:
           mkdir -p release-assets
           output='release-assets/CC-MiniRoute_3.19.3_universal-unsigned-test.dmg'
           cp "$source_dmg" "$output"
-          shasum -a 256 "$output" > release-assets/SHA256SUMS-macOS.txt
+          (
+            cd release-assets
+            shasum -a 256 "$(basename "$output")" > SHA256SUMS-macOS.txt
+          )
           echo "path=$output" >> "$GITHUB_OUTPUT"
 
       - name: Upload workflow artifact
