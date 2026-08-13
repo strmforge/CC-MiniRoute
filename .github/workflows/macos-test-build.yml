@@ -1,0 +1,84 @@
+name: macOS Test Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag to receive the unsigned DMG
+        required: true
+        default: cc-miniroute-v3.19.2-r2
+
+permissions:
+  contents: write
+
+concurrency:
+  group: macos-test-${{ inputs.release_tag }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release_tag }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Setup pnpm
+        env:
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+        run: |
+          corepack enable
+          corepack install
+          pnpm --version
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build unsigned universal DMG
+        run: pnpm tauri build --target universal-apple-darwin --bundles dmg
+
+      - name: Prepare test artifact
+        id: artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_dmg=$(find src-tauri/target/universal-apple-darwin/release/bundle/dmg -maxdepth 1 -name '*.dmg' -type f | head -1)
+          if [ -z "$source_dmg" ]; then
+            echo 'No DMG produced' >&2
+            exit 1
+          fi
+
+          mkdir -p release-assets
+          output='release-assets/CC-MiniRoute_3.19.2_universal-unsigned-test.dmg'
+          cp "$source_dmg" "$output"
+          shasum -a 256 "$output" > release-assets/SHA256SUMS-macOS.txt
+          echo "path=$output" >> "$GITHUB_OUTPUT"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: CC-MiniRoute-macOS-unsigned-test
+          path: release-assets/*
+          if-no-files-found: error
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload '${{ inputs.release_tag }}' \
+            '${{ steps.artifact.outputs.path }}' \
+            release-assets/SHA256SUMS-macOS.txt \
+            --clobber
