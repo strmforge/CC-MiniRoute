@@ -32,9 +32,16 @@ jobs:
           node-version: '20'
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.95
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Verify universal Rust targets
+        run: |
+          rustc --version
+          rustup target list --installed
+          rustup target list --installed | grep -qx aarch64-apple-darwin
+          rustup target list --installed | grep -qx x86_64-apple-darwin
 
       - name: Setup pnpm
         env:
