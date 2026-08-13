@@ -120,8 +120,7 @@ export function useSettingsForm(): UseSettingsFormResult {
         data.preserveCodexOfficialAuthOnSwitch ?? false,
       enableCodexMultiProviderBridge:
         data.enableCodexMultiProviderBridge ?? false,
-      enableCodexStableProxyEntry:
-        data.enableCodexStableProxyEntry ?? false,
+      enableCodexStableProxyEntry: data.enableCodexStableProxyEntry ?? false,
       unifyCodexSessionHistory: data.unifyCodexSessionHistory ?? false,
       claudeConfigDir: sanitizeDir(data.claudeConfigDir),
       codexConfigDir: sanitizeDir(data.codexConfigDir),
