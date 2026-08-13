@@ -117,6 +117,7 @@ export interface AuthBinding {
   source: AuthBindingSource;
   authProvider?: string;
   accountId?: string;
+  mode?: "default" | "account" | "pool";
 }
 
 export interface ClaudeDesktopModelRoute {

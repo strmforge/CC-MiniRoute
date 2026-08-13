@@ -14,6 +14,18 @@ export interface ManagedAuthAccount {
   is_default: boolean;
   github_domain: string;
   requires_reauth: boolean;
+  enabled?: boolean;
+  pool_enabled?: boolean;
+  status?: "active" | "cooldown" | "disabled" | "expired" | "reauth_required";
+  last_error?: string | null;
+  cooldown_until_ms?: number | null;
+  priority?: number;
+  concurrency?: number;
+  expires_at_ms?: number | null;
+  auto_pause_on_expired?: boolean;
+  renewable?: boolean;
+  plan_type?: string | null;
+  proxy_url?: string | null;
 }
 
 export interface ManagedAuthStatus {
@@ -31,6 +43,47 @@ export interface ManagedAuthDeviceCodeResponse {
   verification_uri: string;
   expires_in: number;
   interval: number;
+}
+
+export interface CodexOAuthImportOptions {
+  updateExisting?: boolean;
+  priority?: number;
+  concurrency?: number;
+  poolEnabled?: boolean;
+  expiresAtMs?: number | null;
+  autoPauseOnExpired?: boolean;
+  proxyUrl?: string | null;
+}
+
+export interface CodexOAuthImportItem {
+  index: number;
+  name: string | null;
+  action: "created" | "updated" | "skipped" | "failed";
+  accountId: string | null;
+  message: string | null;
+}
+
+export interface CodexOAuthImportResult {
+  total: number;
+  created: number;
+  updated: number;
+  skipped: number;
+  failed: number;
+  items: CodexOAuthImportItem[];
+  warnings: string[];
+  errors: string[];
+}
+
+export interface CodexOAuthAccountUpdate {
+  enabled?: boolean;
+  poolEnabled?: boolean;
+  priority?: number;
+  concurrency?: number;
+  expiresAtMs?: number;
+  clearExpiresAt?: boolean;
+  autoPauseOnExpired?: boolean;
+  proxyUrl?: string;
+  clearProxyUrl?: boolean;
 }
 
 export async function authStartLogin(
@@ -91,6 +144,26 @@ export async function authSetDefaultAccount(
   });
 }
 
+export async function importCodexOauthAccounts(
+  content: string,
+  options: CodexOAuthImportOptions = {},
+): Promise<CodexOAuthImportResult> {
+  return invoke<CodexOAuthImportResult>("import_codex_oauth_accounts", {
+    content,
+    options,
+  });
+}
+
+export async function updateCodexOauthAccount(
+  accountId: string,
+  update: CodexOAuthAccountUpdate,
+): Promise<void> {
+  return invoke("update_codex_oauth_account", {
+    accountId,
+    update,
+  });
+}
+
 export async function authLogout(
   authProvider: ManagedAuthProvider,
 ): Promise<void> {
@@ -106,5 +179,7 @@ export const authApi = {
   authGetStatus,
   authRemoveAccount,
   authSetDefaultAccount,
+  importCodexOauthAccounts,
+  updateCodexOauthAccount,
   authLogout,
 };

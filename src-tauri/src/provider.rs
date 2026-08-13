@@ -84,7 +84,39 @@ impl Provider {
         self.is_github_copilot()
             || self.is_codex_oauth()
             || self.is_xai_oauth()
+            || self.uses_codex_oauth_account_binding()
             || self.claude_base_url_contains("chatgpt.com/backend-api/codex")
+    }
+
+    /// Whether this Codex request should use a CC Switch-managed ChatGPT
+    /// account instead of the Authorization header supplied by Codex itself.
+    ///
+    /// The built-in official provider is deliberately opt-in: an explicit
+    /// `default` binding still means native Codex login, while `account` and
+    /// `pool` enable the managed OAuth path. Standalone `codex_oauth` providers
+    /// retain their existing default-account behavior.
+    pub fn uses_codex_oauth_account_binding(&self) -> bool {
+        if self.is_codex_oauth() {
+            return true;
+        }
+
+        if self.id != crate::database::CODEX_OFFICIAL_PROVIDER_ID
+            || self.category.as_deref() != Some("official")
+        {
+            return false;
+        }
+
+        self.meta.as_ref().is_some_and(|meta| {
+            meta.auth_binding.as_ref().is_some_and(|binding| {
+                binding.source == AuthBindingSource::ManagedAccount
+                    && binding.auth_provider.as_deref() == Some("codex_oauth")
+                    && match binding.mode {
+                        Some(ManagedAccountMode::Default) => false,
+                        Some(ManagedAccountMode::Account | ManagedAccountMode::Pool) => true,
+                        None => binding.account_id.is_some(),
+                    }
+            })
+        })
     }
 
     /// Whether the provider form's "auth field" was explicitly set to
@@ -347,6 +379,17 @@ pub enum AuthBindingSource {
     ManagedAccount,
 }
 
+/// 托管账号的选择方式。
+///
+/// 旧配置没有该字段：`accountId` 有值时视为指定账号，否则继续使用默认账号。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedAccountMode {
+    Default,
+    Account,
+    Pool,
+}
+
 /// 通用认证绑定
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AuthBinding {
@@ -359,6 +402,9 @@ pub struct AuthBinding {
     /// 托管账号 ID；为空表示跟随该认证供应商的默认账号
     #[serde(rename = "accountId", skip_serializing_if = "Option::is_none")]
     pub account_id: Option<String>,
+    /// default / account / pool；缺失时按旧版 `accountId` 语义推断。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<ManagedAccountMode>,
 }
 
 /// Claude Desktop 3P 写入模式。
@@ -586,6 +632,7 @@ impl ProviderMeta {
         if let Some(binding) = self.auth_binding.as_ref() {
             if binding.source == AuthBindingSource::ManagedAccount
                 && binding.auth_provider.as_deref() == Some(auth_provider)
+                && matches!(binding.mode, None | Some(ManagedAccountMode::Account))
             {
                 return binding.account_id.clone();
             }
@@ -596,6 +643,14 @@ impl ProviderMeta {
         }
 
         None
+    }
+
+    pub fn uses_managed_account_pool(&self, auth_provider: &str) -> bool {
+        self.auth_binding.as_ref().is_some_and(|binding| {
+            binding.source == AuthBindingSource::ManagedAccount
+                && binding.auth_provider.as_deref() == Some(auth_provider)
+                && binding.mode == Some(ManagedAccountMode::Pool)
+        })
     }
 }
 
@@ -995,11 +1050,53 @@ pub struct OpenCodeModelLimit {
 #[cfg(test)]
 mod tests {
     use super::{
-        ClaudeModelConfig, CodexModelConfig, GeminiModelConfig, LocalProxyRequestOverrides,
-        OpenCodeProviderConfig, Provider, ProviderManager, ProviderMeta, UniversalProvider,
+        AuthBinding, AuthBindingSource, ClaudeModelConfig, CodexModelConfig, GeminiModelConfig,
+        LocalProxyRequestOverrides, ManagedAccountMode, OpenCodeProviderConfig, Provider,
+        ProviderManager, ProviderMeta, UniversalProvider,
     };
     use serde_json::json;
     use std::collections::HashMap;
+
+    #[test]
+    fn managed_account_binding_preserves_legacy_and_explicit_mode_semantics() {
+        let binding = |mode, account_id: Option<&str>| AuthBinding {
+            source: AuthBindingSource::ManagedAccount,
+            auth_provider: Some("codex_oauth".to_string()),
+            account_id: account_id.map(str::to_string),
+            mode,
+        };
+
+        let mut meta = ProviderMeta {
+            auth_binding: Some(binding(None, Some("legacy-account"))),
+            ..ProviderMeta::default()
+        };
+        assert_eq!(
+            meta.managed_account_id_for("codex_oauth").as_deref(),
+            Some("legacy-account")
+        );
+
+        meta.auth_binding = Some(binding(
+            Some(ManagedAccountMode::Account),
+            Some("fixed-account"),
+        ));
+        assert_eq!(
+            meta.managed_account_id_for("codex_oauth").as_deref(),
+            Some("fixed-account")
+        );
+
+        meta.auth_binding = Some(binding(
+            Some(ManagedAccountMode::Default),
+            Some("stale-account"),
+        ));
+        assert_eq!(meta.managed_account_id_for("codex_oauth"), None);
+
+        meta.auth_binding = Some(binding(
+            Some(ManagedAccountMode::Pool),
+            Some("stale-account"),
+        ));
+        assert_eq!(meta.managed_account_id_for("codex_oauth"), None);
+        assert!(meta.uses_managed_account_pool("codex_oauth"));
+    }
 
     #[test]
     fn provider_meta_serializes_pricing_model_source() {

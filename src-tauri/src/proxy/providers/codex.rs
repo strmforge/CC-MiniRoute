@@ -219,9 +219,9 @@ pub fn provider_needs_responses_namespace_flatten(provider: &Provider) -> bool {
     provider.is_xai_oauth()
 }
 
-/// The single built-in official Codex provider.  Unlike managed Codex OAuth
-/// providers used by Claude, this route receives authentication from the
-/// calling Codex client (`requires_openai_auth = true`).
+/// The single built-in official Codex provider. It uses the calling Codex
+/// client's login by default, or a CC Switch-managed account when explicitly
+/// bound through `authBinding`.
 pub fn is_codex_official_provider(provider: &Provider) -> bool {
     provider.id == crate::database::CODEX_OFFICIAL_PROVIDER_ID
         && provider.category.as_deref() == Some("official")
@@ -867,6 +867,18 @@ impl ProviderAdapter for CodexAdapter {
     }
 
     fn extract_auth(&self, provider: &Provider) -> Option<AuthInfo> {
+        // The built-in OpenAI Official card normally has no stored key: Codex
+        // supplies its own ChatGPT Authorization header. When the user opts
+        // that same card into CC Switch account management, return the same
+        // placeholder used by the standalone codex_oauth provider so the
+        // forwarder resolves and refreshes the managed token per request.
+        if is_codex_official_provider(provider) && provider.uses_codex_oauth_account_binding() {
+            return Some(AuthInfo::new(
+                "codex_oauth_placeholder".to_string(),
+                AuthStrategy::CodexOAuth,
+            ));
+        }
+
         // xAI OAuth (Grok subscription): placeholder credentials only; the real
         // access_token is resolved per-request by the forwarder via XaiOAuthManager.
         if provider.is_xai_oauth() {
@@ -1029,6 +1041,28 @@ context_window = 500000
             ),
             "https://chatgpt.com/backend-api/codex/responses/compact"
         );
+    }
+
+    #[test]
+    fn official_provider_uses_managed_auth_only_when_explicitly_bound() {
+        let mut provider = create_provider(json!({ "auth": {}, "config": "" }));
+        provider.id = "codex-official".to_string();
+        provider.category = Some("official".to_string());
+        provider.meta = Some(crate::provider::ProviderMeta {
+            auth_binding: Some(crate::provider::AuthBinding {
+                source: crate::provider::AuthBindingSource::ManagedAccount,
+                auth_provider: Some("codex_oauth".to_string()),
+                account_id: Some("account-1".to_string()),
+                mode: Some(crate::provider::ManagedAccountMode::Account),
+            }),
+            ..Default::default()
+        });
+
+        let auth = CodexAdapter::new()
+            .extract_auth(&provider)
+            .expect("managed official card should expose an OAuth placeholder");
+        assert_eq!(auth.api_key, "codex_oauth_placeholder");
+        assert_eq!(auth.strategy, AuthStrategy::CodexOAuth);
     }
 
     #[test]

@@ -6,7 +6,7 @@ on:
       release_tag:
         description: Existing release tag to receive the unsigned DMG
         required: true
-        default: cc-miniroute-v3.19.2-r2
+        default: cc-miniroute-v3.19.3-rc1
 
 permissions:
   contents: write
@@ -71,7 +71,7 @@ jobs:
           fi
 
           mkdir -p release-assets
-          output='release-assets/CC-MiniRoute_3.19.2_universal-unsigned-test.dmg'
+          output='release-assets/CC-MiniRoute_3.19.3_universal-unsigned-test.dmg'
           cp "$source_dmg" "$output"
           shasum -a 256 "$output" > release-assets/SHA256SUMS-macOS.txt
           echo "path=$output" >> "$GITHUB_OUTPUT"

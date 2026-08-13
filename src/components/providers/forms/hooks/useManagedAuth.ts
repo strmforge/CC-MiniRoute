@@ -3,6 +3,8 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { authApi, settingsApi } from "@/lib/api";
 import { copyText } from "@/lib/clipboard";
 import type {
+  CodexOAuthAccountUpdate,
+  CodexOAuthImportOptions,
   ManagedAuthProvider,
   ManagedAuthStatus,
   ManagedAuthDeviceCodeResponse,
@@ -181,6 +183,42 @@ export function useManagedAuth(
     },
   });
 
+  const importAccountsMutation = useMutation({
+    mutationFn: ({
+      content,
+      options,
+    }: {
+      content: string;
+      options?: CodexOAuthImportOptions;
+    }) => authApi.importCodexOauthAccounts(content, options),
+    onSuccess: async () => {
+      setError(null);
+      await refetchStatus();
+      await queryClient.invalidateQueries({ queryKey });
+    },
+    onError: (e) => {
+      setError(e instanceof Error ? e.message : String(e));
+    },
+  });
+
+  const updateAccountMutation = useMutation({
+    mutationFn: ({
+      accountId,
+      update,
+    }: {
+      accountId: string;
+      update: CodexOAuthAccountUpdate;
+    }) => authApi.updateCodexOauthAccount(accountId, update),
+    onSuccess: async () => {
+      setError(null);
+      await refetchStatus();
+      await queryClient.invalidateQueries({ queryKey });
+    },
+    onError: (e) => {
+      setError(e instanceof Error ? e.message : String(e));
+    },
+  });
+
   const startAuth = useCallback(() => {
     setPollingState("idle");
     setDeviceCode(null);
@@ -231,12 +269,18 @@ export function useManagedAuth(
     isAddingAccount: startLoginMutation.isPending || pollingState === "polling",
     isRemovingAccount: removeAccountMutation.isPending,
     isSettingDefaultAccount: setDefaultAccountMutation.isPending,
+    isImportingAccounts: importAccountsMutation.isPending,
+    isUpdatingAccount: updateAccountMutation.isPending,
     startAuth,
     addAccount: startAuth,
     cancelAuth,
     logout,
     removeAccount,
     setDefaultAccount,
+    importAccounts: (content: string, options?: CodexOAuthImportOptions) =>
+      importAccountsMutation.mutateAsync({ content, options }),
+    updateAccount: (accountId: string, update: CodexOAuthAccountUpdate) =>
+      updateAccountMutation.mutateAsync({ accountId, update }),
     refetchStatus,
   };
 }

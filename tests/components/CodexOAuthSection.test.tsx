@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CodexOAuthSection } from "@/components/providers/forms/CodexOAuthSection";
 import { AuthCenterPanel } from "@/components/settings/AuthCenterPanel";
@@ -29,6 +30,7 @@ vi.mock("@/components/providers/forms/XaiOAuthSection", () => ({
 
 describe("CodexOAuthSection", () => {
   beforeEach(() => {
+    Element.prototype.scrollIntoView = vi.fn();
     mocks.useCodexOauth.mockReturnValue({
       accounts: [
         {
@@ -50,9 +52,13 @@ describe("CodexOAuthSection", () => {
       isAddingAccount: false,
       isRemovingAccount: false,
       isSettingDefaultAccount: false,
+      isImportingAccounts: false,
+      isUpdatingAccount: false,
       addAccount: vi.fn(),
       removeAccount: vi.fn(),
       setDefaultAccount: vi.fn(),
+      importAccounts: vi.fn(),
+      updateAccount: vi.fn(),
       cancelAuth: vi.fn(),
       logout: vi.fn(),
     });
@@ -70,5 +76,89 @@ describe("CodexOAuthSection", () => {
 
     expect(mocks.renderAccountQuota).toHaveBeenCalledWith("account-1");
     expect(screen.getByTestId("account-quota")).toHaveTextContent("account-1");
+  });
+
+  it("selects the default account when switching to fixed-account mode", async () => {
+    const user = userEvent.setup();
+    const onAccountModeChange = vi.fn();
+    const onAccountSelect = vi.fn();
+    render(
+      <CodexOAuthSection
+        accountMode="default"
+        onAccountModeChange={onAccountModeChange}
+        onAccountSelect={onAccountSelect}
+      />,
+    );
+
+    await user.click(screen.getByRole("combobox"));
+    await user.click(
+      screen.getByRole("option", { name: "codexOauth.modeAccount" }),
+    );
+
+    expect(onAccountModeChange).toHaveBeenCalledWith("account");
+    expect(onAccountSelect).toHaveBeenCalledWith("account-1");
+  });
+
+  it("clears a fixed binding when switching to pool mode", async () => {
+    const user = userEvent.setup();
+    const onAccountModeChange = vi.fn();
+    const onAccountSelect = vi.fn();
+    render(
+      <CodexOAuthSection
+        accountMode="account"
+        selectedAccountId="account-1"
+        onAccountModeChange={onAccountModeChange}
+        onAccountSelect={onAccountSelect}
+      />,
+    );
+
+    await user.click(screen.getAllByRole("combobox")[0]);
+    await user.click(
+      screen.getByRole("option", { name: "codexOauth.modePool" }),
+    );
+
+    expect(onAccountModeChange).toHaveBeenCalledWith("pool");
+    expect(onAccountSelect).toHaveBeenCalledWith(null);
+  });
+
+  it("labels default mode as native Codex login on the official card", () => {
+    render(
+      <CodexOAuthSection
+        accountMode="default"
+        onAccountModeChange={vi.fn()}
+        onAccountSelect={vi.fn()}
+        nativeCodexLoginDefault
+      />,
+    );
+
+    expect(
+      screen.getByText("codexOauth.modeCodexOfficial"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("codexOauth.modeDescription.codexOfficial"),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps native Codex login visible without managed accounts", async () => {
+    mocks.useCodexOauth.mockReturnValue({
+      ...mocks.useCodexOauth(),
+      accounts: [],
+      defaultAccountId: null,
+      hasAnyAccount: false,
+    });
+
+    render(
+      <CodexOAuthSection
+        accountMode="default"
+        onAccountModeChange={vi.fn()}
+        onAccountSelect={vi.fn()}
+        nativeCodexLoginDefault
+      />,
+    );
+
+    expect(
+      screen.getByText("codexOauth.modeCodexOfficial"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("未导入托管账号")).toBeInTheDocument();
   });
 });

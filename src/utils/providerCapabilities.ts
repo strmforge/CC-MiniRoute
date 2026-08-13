@@ -10,6 +10,39 @@ import {
 export const CODEX_OFFICIAL_PROVIDER_ID = "codex-official";
 export const GROKBUILD_OFFICIAL_PROVIDER_ID = "grokbuild-official";
 
+/**
+ * Whether the fixed Codex official card explicitly delegates ChatGPT
+ * authentication to CC Switch's managed-account store.
+ *
+ * The empty/default binding is intentionally native: Codex keeps using its
+ * own auth.json and the original Authorization header. Older bindings that
+ * have an accountId but no mode remain compatible with the account behavior.
+ */
+export function usesCodexOfficialManagedAuth(
+  provider: Pick<Provider, "id" | "category" | "meta">,
+): boolean {
+  if (
+    provider.id !== CODEX_OFFICIAL_PROVIDER_ID ||
+    provider.category !== "official"
+  ) {
+    return false;
+  }
+
+  const binding = provider.meta?.authBinding;
+  if (
+    binding?.source !== "managed_account" ||
+    binding.authProvider !== "codex_oauth"
+  ) {
+    return false;
+  }
+
+  return (
+    binding.mode === "account" ||
+    binding.mode === "pool" ||
+    (binding.mode === undefined && Boolean(binding.accountId))
+  );
+}
+
 /** Keep the UI capability rule aligned with the Rust takeover policy. */
 export function supportsOfficialProxyTakeover(
   appId: AppId,
@@ -39,7 +72,9 @@ export function providerNeedsRouting(
   appId: AppId,
   provider: Provider,
 ): boolean {
-  if (provider.category === "official") return false;
+  if (provider.category === "official") {
+    return appId === "codex" && usesCodexOfficialManagedAuth(provider);
+  }
 
   const isManagedOAuth = isOAuthProviderType(provider.meta?.providerType);
 

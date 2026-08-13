@@ -2163,12 +2163,19 @@ pub fn read_codex_live_settings() -> Result<Value, AppError> {
 fn codex_official_provider_table(
     base_url: Option<&str>,
     supports_websockets: bool,
+    managed_auth: bool,
 ) -> toml_edit::Table {
     let mut table = toml_edit::Table::new();
     table["name"] = toml_edit::value("OpenAI");
-    table["requires_openai_auth"] = toml_edit::value(true);
+    table["requires_openai_auth"] = toml_edit::value(!managed_auth);
     table["supports_websockets"] = toml_edit::value(supports_websockets);
     table["wire_api"] = toml_edit::value("responses");
+    if managed_auth {
+        // Satisfy Codex's custom-provider credential check without touching
+        // auth.json. The proxy replaces this marker with the selected managed
+        // account token before the request reaches the official upstream.
+        table["experimental_bearer_token"] = toml_edit::value(CODEX_PROXY_AUTH_PLACEHOLDER);
+    }
     if let Some(base_url) = base_url {
         table["base_url"] = toml_edit::value(base_url.trim_end_matches('/'));
     }
@@ -2286,7 +2293,7 @@ pub fn remove_codex_stable_proxy_route(config_text: &str) -> Result<String, AppE
 }
 
 fn codex_unified_official_provider_table() -> toml_edit::Table {
-    codex_official_provider_table(None, true)
+    codex_official_provider_table(None, true, false)
 }
 
 fn remove_codex_proxy_placeholders_from_providers(providers: &mut toml_edit::Table) {
@@ -2311,22 +2318,23 @@ fn remove_codex_proxy_placeholders_from_providers(providers: &mut toml_edit::Tab
     }
 }
 
-/// Project the built-in Codex official provider through the local proxy while
-/// keeping authentication owned by Codex itself.
+/// Project the built-in Codex official provider through the local proxy.
 ///
-/// The resulting custom provider explicitly opts into OpenAI authentication,
-/// so Codex forwards its existing ChatGPT login to the local `/responses`
-/// endpoint.  No API key or bearer placeholder is written to `auth.json`.
+/// Native mode keeps authentication owned by Codex itself. Managed mode puts a
+/// MiniRoute-owned placeholder in this provider table so Codex can start without
+/// a native login; the proxy replaces it with the bound account token. Neither
+/// mode writes to `auth.json`.
 pub fn apply_codex_official_proxy_route(
     config_text: &str,
     proxy_base_url: &str,
+    managed_auth: bool,
 ) -> Result<String, AppError> {
     let mut doc = config_text
         .parse::<DocumentMut>()
         .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))?;
 
-    // A third-party takeover may have left the proxy placeholder in config.toml.
-    // The official route must use Codex's native OpenAI login instead.
+    // A third-party takeover may have left the proxy placeholder at the root.
+    // The official route owns any required marker inside its dedicated table.
     doc.as_table_mut().remove("experimental_bearer_token");
     doc["model_provider"] = toml_edit::value(CC_SWITCH_CODEX_OFFICIAL_PROXY_PROVIDER_ID);
 
@@ -2348,7 +2356,7 @@ pub fn apply_codex_official_proxy_route(
     remove_codex_proxy_placeholders_from_providers(&mut providers);
 
     // The local proxy currently exposes HTTP/SSE, not Codex websocket routes.
-    let table = codex_official_provider_table(Some(proxy_base_url), false);
+    let table = codex_official_provider_table(Some(proxy_base_url), false, managed_auth);
 
     providers.insert(
         CC_SWITCH_CODEX_OFFICIAL_PROXY_PROVIDER_ID,
@@ -3030,7 +3038,7 @@ experimental_bearer_token = "PROXY_MANAGED"
 [mcp_servers.example]
 command = "example"
 "#;
-        let output = apply_codex_official_proxy_route(input, "http://127.0.0.1:15731/v1")
+        let output = apply_codex_official_proxy_route(input, "http://127.0.0.1:15731/v1", false)
             .expect("apply official proxy route");
         let doc: toml::Value = toml::from_str(&output).expect("parse output");
 
@@ -3066,9 +3074,12 @@ command = "example"
 
     #[test]
     fn official_proxy_route_cleanup_only_removes_owned_provider() {
-        let projected =
-            apply_codex_official_proxy_route("model = \"gpt-5.4\"\n", "http://127.0.0.1:15731/v1")
-                .expect("project");
+        let projected = apply_codex_official_proxy_route(
+            "model = \"gpt-5.4\"\n",
+            "http://127.0.0.1:15731/v1",
+            false,
+        )
+        .expect("project");
         let cleaned = remove_codex_official_proxy_route(&projected).expect("clean");
         let doc: toml::Value = toml::from_str(&cleaned).expect("parse cleaned");
         assert!(doc.get("model_provider").is_none());
@@ -3085,7 +3096,8 @@ command = "example"
             "model_providers = 3\n",
             "[[model_providers]]\nname = \"broken\"\n",
         ] {
-            let result = apply_codex_official_proxy_route(input, "http://127.0.0.1:15731/v1");
+            let result =
+                apply_codex_official_proxy_route(input, "http://127.0.0.1:15731/v1", false);
             assert!(result.is_err());
         }
     }
@@ -3095,7 +3107,7 @@ command = "example"
         let input = r#"model_provider = "rightcode"
 model_providers = { rightcode = { name = "RightCode", experimental_bearer_token = "PROXY_MANAGED" } }
 "#;
-        let projected = apply_codex_official_proxy_route(input, "http://127.0.0.1:15731/v1")
+        let projected = apply_codex_official_proxy_route(input, "http://127.0.0.1:15731/v1", false)
             .expect("project inline provider table");
         let projected_doc: toml::Value = toml::from_str(&projected).expect("parse projected");
         assert!(projected_doc["model_providers"]["rightcode"]
@@ -3112,6 +3124,51 @@ model_providers = { rightcode = { name = "RightCode", experimental_bearer_token 
         assert!(cleaned_doc["model_providers"]
             .get(CC_SWITCH_CODEX_OFFICIAL_PROXY_PROVIDER_ID)
             .is_none());
+    }
+
+    #[test]
+    fn official_proxy_route_managed_auth_uses_owned_placeholder_only() {
+        let input = r#"experimental_bearer_token = "PROXY_MANAGED"
+
+[model_providers.stale]
+name = "Stale"
+experimental_bearer_token = "PROXY_MANAGED"
+"#;
+        let projected = apply_codex_official_proxy_route(input, "http://127.0.0.1:15731/v1", true)
+            .expect("project managed official route");
+        let doc: toml::Value = toml::from_str(&projected).expect("parse projected config");
+        let official = &doc["model_providers"][CC_SWITCH_CODEX_OFFICIAL_PROXY_PROVIDER_ID];
+
+        assert!(doc.get("experimental_bearer_token").is_none());
+        assert!(doc["model_providers"]["stale"]
+            .get("experimental_bearer_token")
+            .is_none());
+        assert_eq!(
+            official
+                .get("requires_openai_auth")
+                .and_then(toml::Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            official
+                .get("experimental_bearer_token")
+                .and_then(toml::Value::as_str),
+            Some(CODEX_PROXY_AUTH_PLACEHOLDER)
+        );
+
+        let native =
+            apply_codex_official_proxy_route(&projected, "http://127.0.0.1:15731/v1", false)
+                .expect("switch back to native official auth");
+        let native_doc: toml::Value = toml::from_str(&native).expect("parse native config");
+        let native_official =
+            &native_doc["model_providers"][CC_SWITCH_CODEX_OFFICIAL_PROXY_PROVIDER_ID];
+        assert_eq!(
+            native_official
+                .get("requires_openai_auth")
+                .and_then(toml::Value::as_bool),
+            Some(true)
+        );
+        assert!(native_official.get("experimental_bearer_token").is_none());
     }
 
     #[test]

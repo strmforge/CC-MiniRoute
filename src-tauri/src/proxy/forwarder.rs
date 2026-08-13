@@ -23,7 +23,9 @@ use super::{
     ProxyError,
 };
 use crate::commands::{CodexOAuthState, CopilotAuthState, XaiOAuthState};
-use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
+use crate::proxy::providers::codex_oauth_auth::{
+    CodexOAuthAccountLease, CodexOAuthManager, CodexOAuthResolvedAccount,
+};
 use crate::proxy::providers::copilot_auth::CopilotAuthManager;
 use crate::proxy::providers::xai_oauth_auth::XaiOAuthManager;
 use crate::{
@@ -56,12 +58,13 @@ fn validate_codex_official_authorization(headers: &http::HeaderMap) -> Result<()
     }
 }
 
-/// The fixed MiniRoute entry makes every Codex request arrive with the native
-/// ChatGPT Authorization header. That header is only valid for the built-in
-/// official upstream; every gateway/native provider must receive adapter-owned
-/// credentials instead.
+/// A native-login official route may pass through Codex's ChatGPT Authorization
+/// header. Managed official bindings and every gateway/native provider must use
+/// adapter-owned credentials instead.
 fn may_passthrough_codex_native_authorization(app_type: &AppType, provider: &Provider) -> bool {
-    matches!(app_type, AppType::Codex) && super::providers::is_codex_official_provider(provider)
+    matches!(app_type, AppType::Codex)
+        && super::providers::is_codex_official_provider(provider)
+        && !provider.uses_codex_oauth_account_binding()
 }
 
 pub struct ForwardResult {
@@ -76,6 +79,7 @@ pub struct ForwardResult {
     /// 活跃连接 RAII guard：随响应一起流转到 response_processor / handle_claude_transform，
     /// 最终被 move 进流式 body future（或非流式响应作用域），覆盖整个响应生命周期。
     pub(crate) connection_guard: Option<ActiveConnectionGuard>,
+    pub(crate) codex_oauth_account_lease: Option<CodexOAuthAccountLease>,
 }
 
 pub struct ForwardError {
@@ -95,6 +99,7 @@ pub struct ForwardError {
 /// 不需要每条出口路径都手动调用。
 pub(crate) struct ActiveConnectionGuard {
     status: Arc<RwLock<ProxyStatus>>,
+    codex_oauth_account_lease: Option<CodexOAuthAccountLease>,
 }
 
 impl ActiveConnectionGuard {
@@ -103,7 +108,10 @@ impl ActiveConnectionGuard {
             let mut s = status.write().await;
             s.active_connections = s.active_connections.saturating_add(1);
         }
-        Self { status }
+        Self {
+            status,
+            codex_oauth_account_lease: None,
+        }
     }
 }
 
@@ -368,7 +376,7 @@ impl RequestForwarder {
         extensions: Extensions,
         providers: Vec<Provider>,
     ) -> Result<ForwardResult, ForwardError> {
-        let guard = ActiveConnectionGuard::acquire(self.status.clone()).await;
+        let mut guard = ActiveConnectionGuard::acquire(self.status.clone()).await;
         {
             let mut s = self.status.write().await;
             s.total_requests = s.total_requests.saturating_add(1);
@@ -383,6 +391,7 @@ impl RequestForwarder {
         // 在流式 body 的 future 内才真正 drop。
         // Err 路径：guard 在函数 scope 内随返回值落地时自动 drop。
         result.map(|mut fr| {
+            guard.codex_oauth_account_lease = fr.codex_oauth_account_lease.take();
             fr.connection_guard = Some(guard);
             fr
         })
@@ -419,15 +428,56 @@ impl RequestForwarder {
             });
         }
 
+        let previous_response_id = body
+            .get("previous_response_id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty());
+        let mut attempts: Vec<(Provider, Option<String>)> = Vec::new();
+        for provider in providers {
+            let uses_pool = provider
+                .meta
+                .as_ref()
+                .is_some_and(|meta| meta.uses_managed_account_pool("codex_oauth"));
+            if uses_pool {
+                let Some(app_handle) = &self.app_handle else {
+                    attempts.push((provider, None));
+                    continue;
+                };
+                let codex_state = app_handle.state::<CodexOAuthState>();
+                let manager = codex_state.0.read().await;
+                let ids = manager
+                    .pool_candidate_ids(
+                        self.session_client_provided
+                            .then_some(self.session_id.as_str()),
+                        previous_response_id,
+                    )
+                    .await;
+                attempts.extend(ids.into_iter().map(|id| (provider.clone(), Some(id))));
+            } else {
+                attempts.push((provider, None));
+            }
+        }
+        if attempts.is_empty() {
+            return Err(ForwardError {
+                error: ProxyError::AuthError("Codex OAuth 账号池没有可调度账号".to_string()),
+                provider: None,
+            });
+        }
+        let total_attempts = attempts.len();
+
         let mut last_error = None;
         let mut last_provider = None;
         let mut attempted_providers = 0usize;
 
         // 单 Provider 场景下跳过熔断器检查（故障转移关闭时）
-        let bypass_circuit_breaker = providers.len() == 1;
+        let unique_provider_ids: std::collections::HashSet<&str> = attempts
+            .iter()
+            .map(|(provider, _)| provider.id.as_str())
+            .collect();
+        let bypass_circuit_breaker = unique_provider_ids.len() == 1;
 
         // 依次尝试每个供应商
-        for provider in providers.iter() {
+        for (provider, pool_account_id) in attempts.iter() {
             // 整流器重试标记：每个 provider 独立持有，避免标记跨 provider 短路故障转移
             // —— 首家 provider 整流后被 5xx/timeout 击落时，下家仍能用整流后的请求体走整流流程
             let mut rectifier_retried = false;
@@ -459,6 +509,33 @@ impl RequestForwarder {
 
             if !allowed {
                 continue;
+            }
+
+            let mut codex_oauth_selection = None;
+            let mut codex_oauth_account_lease = None;
+            if let Some(record_id) = pool_account_id.as_deref() {
+                let Some(app_handle) = &self.app_handle else {
+                    continue;
+                };
+                let codex_state = app_handle.state::<CodexOAuthState>();
+                let manager = codex_state.0.read().await;
+                match manager
+                    .acquire_pool_account(
+                        record_id,
+                        self.session_client_provided
+                            .then_some(self.session_id.as_str()),
+                    )
+                    .await
+                {
+                    Ok((selection, lease)) => {
+                        codex_oauth_selection = Some(selection);
+                        codex_oauth_account_lease = Some(lease);
+                    }
+                    Err(error) => {
+                        log::debug!("[CodexOAuth] 跳过不可用账号 {}: {}", record_id, error);
+                        continue;
+                    }
+                }
             }
 
             // PRE-SEND 优化器：每个 provider 独立决定是否优化
@@ -501,6 +578,7 @@ impl RequestForwarder {
                     &headers,
                     &extensions,
                     adapter.as_ref(),
+                    codex_oauth_selection.as_ref(),
                 )
                 .await
             {
@@ -554,6 +632,7 @@ impl RequestForwarder {
                         claude_api_format,
                         outbound_model,
                         connection_guard: None,
+                        codex_oauth_account_lease,
                     });
                 }
                 Err(e) => {
@@ -600,6 +679,7 @@ impl RequestForwarder {
                                     &headers,
                                     &extensions,
                                     adapter.as_ref(),
+                                    codex_oauth_selection.as_ref(),
                                 )
                                 .await
                             {
@@ -657,6 +737,7 @@ impl RequestForwarder {
                                         claude_api_format,
                                         outbound_model,
                                         connection_guard: None,
+                                        codex_oauth_account_lease,
                                     });
                                 }
                                 Err(retry_err) => {
@@ -746,6 +827,7 @@ impl RequestForwarder {
                                         &headers,
                                         &extensions,
                                         adapter.as_ref(),
+                                        codex_oauth_selection.as_ref(),
                                     )
                                     .await
                                 {
@@ -806,6 +888,7 @@ impl RequestForwarder {
                                             claude_api_format,
                                             outbound_model,
                                             connection_guard: None,
+                                            codex_oauth_account_lease,
                                         });
                                     }
                                     Err(retry_err) => {
@@ -912,6 +995,7 @@ impl RequestForwarder {
                                     &headers,
                                     &extensions,
                                     adapter.as_ref(),
+                                    codex_oauth_selection.as_ref(),
                                 )
                                 .await
                             {
@@ -966,6 +1050,7 @@ impl RequestForwarder {
                                         claude_api_format,
                                         outbound_model,
                                         connection_guard: None,
+                                        codex_oauth_account_lease,
                                     });
                                 }
                                 Err(retry_err) => {
@@ -1017,6 +1102,37 @@ impl RequestForwarder {
                     // 先分类错误，决定是否计入 provider 健康度
                     // —— NonRetryable / ClientAbort 是客户端层错误，无论换哪家 provider 都会被拒绝，
                     //    不应污染熔断器和数据库健康度（与 release_permit_neutral 同语义）。
+                    if let (Some(selection), ProxyError::UpstreamError { status, .. }) =
+                        (codex_oauth_selection.as_ref(), &e)
+                    {
+                        if matches!(*status, 401 | 403 | 429) {
+                            if let Some(app_handle) = &self.app_handle {
+                                let codex_state = app_handle.state::<CodexOAuthState>();
+                                let manager = codex_state.0.read().await;
+                                manager
+                                    .report_pool_failure(&selection.record_id, *status)
+                                    .await;
+                            }
+                            self.router
+                                .release_permit_neutral(
+                                    &provider.id,
+                                    app_type_str,
+                                    used_half_open_permit,
+                                )
+                                .await;
+                            {
+                                let mut status_state = self.status.write().await;
+                                status_state.last_error = Some(format!(
+                                    "Codex OAuth pool account {} failed with upstream status {}",
+                                    selection.record_id, status
+                                ));
+                            }
+                            last_error = Some(e);
+                            last_provider = Some(provider.clone());
+                            continue;
+                        }
+                    }
+
                     let category = self.categorize_proxy_error(&e, provider);
 
                     match category {
@@ -1042,7 +1158,7 @@ impl RequestForwarder {
                             let (log_code, log_message) = build_retryable_failure_log(
                                 &provider.name,
                                 attempted_providers,
-                                providers.len(),
+                                total_attempts,
                                 &e,
                             );
                             log::warn!("[{app_type_str}] [{log_code}] {log_message}");
@@ -1110,7 +1226,7 @@ impl RequestForwarder {
         }
 
         if let Some((log_code, log_message)) =
-            build_terminal_failure_log(attempted_providers, providers.len(), last_error.as_ref())
+            build_terminal_failure_log(attempted_providers, total_attempts, last_error.as_ref())
         {
             log::warn!("[{app_type_str}] [{log_code}] {log_message}");
         }
@@ -1136,6 +1252,7 @@ impl RequestForwarder {
         headers: &axum::http::HeaderMap,
         extensions: &Extensions,
         adapter: &dyn ProviderAdapter,
+        codex_oauth_selection: Option<&CodexOAuthResolvedAccount>,
     ) -> Result<(ProxyResponse, Option<String>, Option<String>), ProxyError> {
         // 使用适配器提取 base_url
         let mut base_url = adapter.extract_base_url(provider)?;
@@ -1688,7 +1805,12 @@ impl RequestForwarder {
 
             // Codex OAuth 特殊处理：从 CodexOAuthManager 获取真实 access_token
             if auth.strategy == AuthStrategy::CodexOAuth {
-                if let Some(app_handle) = &self.app_handle {
+                if let Some(selection) = codex_oauth_selection {
+                    auth = AuthInfo::new(selection.access_token.clone(), AuthStrategy::CodexOAuth);
+                    should_send_codex_oauth_session_headers = true;
+                    codex_oauth_account_id = selection.upstream_account_id.clone();
+                    log::debug!("[CodexOAuth] 使用账号池记录 {}", selection.record_id);
+                } else if let Some(app_handle) = &self.app_handle {
                     let codex_state = app_handle.state::<CodexOAuthState>();
                     let codex_auth: tokio::sync::RwLockReadGuard<'_, CodexOAuthManager> =
                         codex_state.0.read().await;
@@ -1699,29 +1821,33 @@ impl RequestForwarder {
                         .as_ref()
                         .and_then(|m| m.managed_account_id_for("codex_oauth"));
 
-                    let token_result = match &account_id {
+                    let record_id = match account_id {
+                        Some(id) => Some(id),
+                        None => codex_auth.default_account_id().await,
+                    };
+                    let token_result = match record_id.as_deref() {
                         Some(id) => {
-                            log::debug!("[CodexOAuth] 使用指定账号 {id} 获取 token");
+                            log::debug!("[CodexOAuth] 使用账号记录 {id} 获取 token");
                             codex_auth.get_valid_token_for_account(id).await
                         }
-                        None => {
-                            log::debug!("[CodexOAuth] 使用默认账号获取 token");
-                            codex_auth.get_valid_token().await
-                        }
+                        None => Err(crate::proxy::providers::codex_oauth_auth::CodexOAuthError::AccountNotFound(
+                            "无可用的 ChatGPT 账号".to_string(),
+                        )),
                     };
 
                     match token_result {
                         Ok(token) => {
                             auth = AuthInfo::new(token, AuthStrategy::CodexOAuth);
                             should_send_codex_oauth_session_headers = true;
-                            // 解析使用的 account_id（用于注入 ChatGPT-Account-Id header）
-                            codex_oauth_account_id = match account_id {
-                                Some(id) => Some(id),
-                                None => codex_auth.default_account_id().await,
+                            // Provider stores MiniRoute's internal record ID. Only the
+                            // upstream ChatGPT workspace/account ID belongs in this header.
+                            codex_oauth_account_id = match record_id.as_deref() {
+                                Some(id) => codex_auth.upstream_account_id_for(id).await,
+                                None => None,
                             };
                             log::debug!(
-                                "[CodexOAuth] 成功获取 access_token (account={})",
-                                codex_oauth_account_id.as_deref().unwrap_or("default")
+                                "[CodexOAuth] 成功获取 access_token (record={})",
+                                record_id.as_deref().unwrap_or("default")
                             );
                         }
                         Err(e) => {
@@ -2219,8 +2345,21 @@ impl RequestForwarder {
             self.non_streaming_timeout
         };
 
-        // 获取全局代理 URL
-        let upstream_proxy_url: Option<String> = super::http_client::get_current_proxy_url();
+        // 账号级代理优先于全局代理。代理 URL 只以脱敏形式进入日志。
+        let account_proxy_url = codex_oauth_selection
+            .and_then(|selection| selection.proxy_url.as_deref())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let upstream_proxy_url: Option<String> = account_proxy_url
+            .clone()
+            .or_else(super::http_client::get_current_proxy_url);
+        if let Some(proxy_url) = account_proxy_url.as_deref() {
+            log::debug!(
+                "[CodexOAuth] 使用账号级代理: {}",
+                super::http_client::mask_url(proxy_url)
+            );
+        }
 
         // SOCKS5 代理不支持 CONNECT 隧道，需要用 reqwest
         let is_socks_proxy = upstream_proxy_url
@@ -2242,7 +2381,11 @@ impl RequestForwarder {
             log::debug!(
                 "[Forwarder] Using pooled reqwest client (preserve_exact_header_case={preserve_exact_header_case}, socks_proxy={is_socks_proxy})"
             );
-            let client = super::http_client::get();
+            let client = match account_proxy_url.as_deref() {
+                Some(proxy_url) => super::http_client::client_for_proxy(proxy_url)
+                    .map_err(ProxyError::ConfigError)?,
+                None => super::http_client::get(),
+            };
             let mut request = client.request(method.clone(), &url);
             if request_is_streaming {
                 // reqwest 的 timeout 是整请求超时；流式请求交给 response_processor
@@ -2324,6 +2467,12 @@ impl RequestForwarder {
                     response = self.validate_responses_stream_start(response).await?;
                 }
             }
+            let response = if let Some(selection) = codex_oauth_selection {
+                self.observe_codex_oauth_response(response, &selection.record_id)
+                    .await
+            } else {
+                response
+            };
             Ok((response, resolved_claude_api_format, outbound_model))
         } else {
             let status_code = status.as_u16();
@@ -2385,6 +2534,88 @@ impl RequestForwarder {
         })??;
 
         Ok(ProxyResponse::buffered(status, headers, body))
+    }
+
+    /// Observe a native Responses result without changing its bytes. The binding
+    /// keeps `previous_response_id` on the account that created that response.
+    async fn observe_codex_oauth_response(
+        &self,
+        response: ProxyResponse,
+        record_id: &str,
+    ) -> ProxyResponse {
+        let Some(app_handle) = &self.app_handle else {
+            return response;
+        };
+        let manager = app_handle.state::<CodexOAuthState>().0.clone();
+        let status = response.status();
+        let headers = response.headers().clone();
+
+        if let ProxyResponse::Buffered { body, .. } = &response {
+            if let Some(response_id) = extract_codex_response_id_from_json(body) {
+                manager
+                    .read()
+                    .await
+                    .bind_response_account(&response_id, record_id)
+                    .await;
+            }
+            return response;
+        }
+
+        let stream = Box::pin(response.bytes_stream());
+        let record_id = record_id.to_string();
+        let observed = futures::stream::unfold(
+            (
+                stream,
+                String::new(),
+                Vec::<u8>::new(),
+                false,
+                manager,
+                record_id,
+            ),
+            |(mut stream, mut parse_buffer, mut utf8_remainder, mut bound, manager, record_id)| async move {
+                let item = stream.next().await?;
+                if !bound {
+                    if let Ok(chunk) = &item {
+                        crate::proxy::sse::append_utf8_safe(
+                            &mut parse_buffer,
+                            &mut utf8_remainder,
+                            chunk,
+                        );
+                        if let Some(response_id) =
+                            extract_codex_response_id_from_buffer(&mut parse_buffer)
+                        {
+                            manager
+                                .read()
+                                .await
+                                .bind_response_account(&response_id, &record_id)
+                                .await;
+                            bound = true;
+                            parse_buffer.clear();
+                            utf8_remainder.clear();
+                        } else if parse_buffer.len() > 256 * 1024 {
+                            // A normal Responses stream identifies itself in its first
+                            // event. Stop observing pathological streams without ever
+                            // delaying or altering downstream delivery.
+                            bound = true;
+                            parse_buffer.clear();
+                            utf8_remainder.clear();
+                        }
+                    }
+                }
+                Some((
+                    item,
+                    (
+                        stream,
+                        parse_buffer,
+                        utf8_remainder,
+                        bound,
+                        manager,
+                        record_id,
+                    ),
+                ))
+            },
+        );
+        ProxyResponse::streamed(status, headers, observed)
     }
 
     /// Some Anthropic-compatible gateways return an Anthropic error envelope with
@@ -3001,6 +3232,49 @@ fn responses_error_envelope_message(body: &[u8]) -> Option<String> {
             _ => "response generation failed",
         });
     Some(format!("{error_type}: {message}"))
+}
+
+fn codex_response_id_from_value(value: &Value) -> Option<String> {
+    value
+        .get("response")
+        .and_then(|response| response.get("id"))
+        .or_else(|| value.get("id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+}
+
+fn extract_codex_response_id_from_json(body: &[u8]) -> Option<String> {
+    serde_json::from_slice::<Value>(body)
+        .ok()
+        .as_ref()
+        .and_then(codex_response_id_from_value)
+}
+
+fn extract_codex_response_id_from_buffer(buffer: &mut String) -> Option<String> {
+    if let Ok(value) = serde_json::from_str::<Value>(buffer.trim()) {
+        if let Some(id) = codex_response_id_from_value(&value) {
+            return Some(id);
+        }
+    }
+
+    while let Some(block) = crate::proxy::sse::take_sse_block(buffer) {
+        let data = block
+            .lines()
+            .filter_map(|line| crate::proxy::sse::strip_sse_field(line, "data"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if data.is_empty() || data == "[DONE]" {
+            continue;
+        }
+        if let Ok(value) = serde_json::from_str::<Value>(&data) {
+            if let Some(id) = codex_response_id_from_value(&value) {
+                return Some(id);
+            }
+        }
+    }
+    None
 }
 
 /// Prompt caching is part of the Codex→Anthropic protocol bridge rather than an
@@ -4019,6 +4293,27 @@ mod tests {
     }
 
     #[test]
+    fn codex_oauth_response_id_extraction_supports_json_and_sse() {
+        assert_eq!(
+            extract_codex_response_id_from_json(br#"{"id":"resp_json","status":"completed"}"#)
+                .as_deref(),
+            Some("resp_json")
+        );
+
+        let mut sse = concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_sse\"}}\n\n",
+            "event: response.output_text.delta\n",
+            "data: {\"delta\":\"hello\"}\n\n"
+        )
+        .to_string();
+        assert_eq!(
+            extract_codex_response_id_from_buffer(&mut sse).as_deref(),
+            Some("resp_sse")
+        );
+    }
+
+    #[test]
     fn managed_account_upstream_rejects_proxy_managed_placeholder_header() {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -4439,6 +4734,20 @@ mod tests {
         official.id = crate::database::CODEX_OFFICIAL_PROVIDER_ID.to_string();
         official.category = Some("official".to_string());
         assert!(may_passthrough_codex_native_authorization(
+            &AppType::Codex,
+            &official
+        ));
+
+        official.meta = Some(crate::provider::ProviderMeta {
+            auth_binding: Some(crate::provider::AuthBinding {
+                source: crate::provider::AuthBindingSource::ManagedAccount,
+                auth_provider: Some("codex_oauth".to_string()),
+                account_id: Some("account-1".to_string()),
+                mode: Some(crate::provider::ManagedAccountMode::Account),
+            }),
+            ..Default::default()
+        });
+        assert!(!may_passthrough_codex_native_authorization(
             &AppType::Codex,
             &official
         ));

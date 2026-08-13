@@ -94,6 +94,8 @@ interface ClaudeFormFieldsProps {
   isCodexOauthAuthenticated?: boolean;
   selectedCodexAccountId?: string | null;
   onCodexAccountSelect?: (accountId: string | null) => void;
+  codexAccountMode?: "default" | "account" | "pool";
+  onCodexAccountModeChange?: (mode: "default" | "account" | "pool") => void;
   codexFastMode?: boolean;
   onCodexFastModeChange?: (enabled: boolean) => void;
 
@@ -177,6 +179,8 @@ export function ClaudeFormFields({
   isCodexOauthAuthenticated,
   selectedCodexAccountId,
   onCodexAccountSelect,
+  codexAccountMode,
+  onCodexAccountModeChange,
   codexFastMode,
   onCodexFastModeChange,
   isXaiOauthPreset,
@@ -657,6 +661,8 @@ export function ClaudeFormFields({
         <CodexOAuthSection
           selectedAccountId={selectedCodexAccountId}
           onAccountSelect={onCodexAccountSelect}
+          accountMode={codexAccountMode}
+          onAccountModeChange={onCodexAccountModeChange}
           fastModeEnabled={codexFastMode}
           onFastModeChange={onCodexFastModeChange}
         />

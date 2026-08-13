@@ -28,6 +28,7 @@ import {
 import EndpointSpeedTest from "./EndpointSpeedTest";
 import { ApiKeySection, EndpointField, ModelDropdown } from "./shared";
 import { XaiOAuthSection } from "./XaiOAuthSection";
+import { CodexOAuthSection } from "./CodexOAuthSection";
 import {
   fetchModelsForConfig,
   fetchXaiOauthModels,
@@ -54,6 +55,12 @@ interface EndpointCandidate {
 interface CodexFormFieldsProps {
   appId?: AppId;
   providerId?: string;
+  /** Built-in OpenAI Official card: optional CC Switch account binding. */
+  isCodexOfficialProvider?: boolean;
+  selectedCodexAccountId?: string | null;
+  onCodexAccountSelect?: (accountId: string | null) => void;
+  codexAccountMode?: "default" | "account" | "pool";
+  onCodexAccountModeChange?: (mode: "default" | "account" | "pool") => void;
   // xAI OAuth 托管预设（Grok 订阅）：隐藏 API Key / 端点输入，挂账号选择区块
   isXaiOauthPreset?: boolean;
   isXaiOauthAuthenticated?: boolean;
@@ -176,6 +183,11 @@ function catalogRowsMatchModels(
 export function CodexFormFields({
   appId = "codex",
   providerId,
+  isCodexOfficialProvider = false,
+  selectedCodexAccountId,
+  onCodexAccountSelect,
+  codexAccountMode,
+  onCodexAccountModeChange,
   isXaiOauthPreset,
   isXaiOauthAuthenticated,
   selectedXaiAccountId,
@@ -511,6 +523,18 @@ export function CodexFormFields({
 
   return (
     <>
+      {/* The official card keeps native Codex login by default. Account
+          management is opt-in and uses the same OAuth manager as codex_oauth. */}
+      {isCodexOfficialProvider && (
+        <CodexOAuthSection
+          selectedAccountId={selectedCodexAccountId}
+          onAccountSelect={onCodexAccountSelect}
+          accountMode={codexAccountMode}
+          onAccountModeChange={onCodexAccountModeChange}
+          nativeCodexLoginDefault
+        />
+      )}
+
       {/* xAI OAuth 认证（Grok 订阅托管账号） */}
       {isXaiOauthPreset && (
         <XaiOAuthSection

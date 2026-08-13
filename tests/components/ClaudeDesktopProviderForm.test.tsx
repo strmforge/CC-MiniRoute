@@ -1,10 +1,29 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClientProvider } from "@tanstack/react-query";
+import { http, HttpResponse } from "msw";
 import type { ComponentProps } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ClaudeDesktopProviderForm } from "@/components/providers/forms/ClaudeDesktopProviderForm";
 import { createTestQueryClient } from "../utils/testQueryClient";
+import { server } from "../msw/server";
+
+const TAURI_ENDPOINT = "http://tauri.local";
+const codexAccount = {
+  id: "codex-account-1",
+  provider: "codex_oauth",
+  login: "codex@example.com",
+  avatar_url: null,
+  authenticated_at: 1,
+  is_default: true,
+  github_domain: "github.com",
+  requires_reauth: false,
+  enabled: true,
+  pool_enabled: true,
+  status: "active",
+  priority: 10,
+  concurrency: 2,
+};
 
 vi.mock("@/lib/api/providers", () => ({
   providersApi: {
@@ -31,6 +50,30 @@ function renderForm(
 }
 
 describe("ClaudeDesktopProviderForm", () => {
+  beforeEach(() => {
+    server.use(
+      http.post(`${TAURI_ENDPOINT}/auth_get_status`, async ({ request }) => {
+        const { authProvider } = (await request.json()) as {
+          authProvider: string;
+        };
+        if (authProvider === "codex_oauth") {
+          return HttpResponse.json({
+            provider: "codex_oauth",
+            authenticated: true,
+            default_account_id: codexAccount.id,
+            accounts: [codexAccount],
+          });
+        }
+        return HttpResponse.json({
+          provider: authProvider,
+          authenticated: false,
+          default_account_id: null,
+          accounts: [],
+        });
+      }),
+    );
+  });
+
   it.each(["github_copilot", "codex_oauth", "xai_oauth"])(
     "托管 OAuth %s 即使旧数据是 direct 也强制开启模型映射",
     (providerType) => {
@@ -348,4 +391,52 @@ describe("ClaudeDesktopProviderForm", () => {
       },
     });
   });
+
+  it.each([
+    ["default", undefined],
+    ["account", codexAccount.id],
+    ["pool", undefined],
+  ] as const)(
+    "Codex OAuth %s 模式保存准确的账号绑定",
+    async (mode, accountId) => {
+      const onSubmit = vi.fn();
+      renderForm(
+        {
+          name: `Codex ${mode}`,
+          category: "third_party",
+          settingsConfig: {
+            env: {
+              ANTHROPIC_BASE_URL: "https://chatgpt.com/backend-api/codex",
+            },
+          },
+          meta: {
+            providerType: "codex_oauth",
+            apiFormat: "openai_responses",
+            claudeDesktopMode: "proxy",
+            claudeDesktopModelRoutes: {
+              "claude-sonnet-5": { model: "gpt-5.6-sol" },
+            },
+            authBinding: {
+              source: "managed_account",
+              authProvider: "codex_oauth",
+              mode,
+              accountId,
+            },
+          },
+        },
+        onSubmit,
+      );
+
+      await screen.findAllByText("codex@example.com");
+      await userEvent.click(screen.getByRole("button", { name: "保存" }));
+
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+      expect(onSubmit.mock.calls[0][0].meta.authBinding).toEqual({
+        source: "managed_account",
+        authProvider: "codex_oauth",
+        mode,
+        ...(accountId ? { accountId } : {}),
+      });
+    },
+  );
 });

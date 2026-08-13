@@ -56,7 +56,20 @@ export const useAddProviderMutation = (appId: AppId) => {
         if (!officialProvider) {
           throw new Error("Codex official provider was not created");
         }
-        return officialProvider;
+
+        // The preset always resolves to the fixed official card. Preserve the
+        // seeded identity/config and only apply the optional managed-account
+        // binding selected in the form. An undefined binding deliberately
+        // clears an older selection and restores Codex's native auth.json.
+        const nextOfficialProvider: Provider = {
+          ...officialProvider,
+          meta: {
+            ...officialProvider.meta,
+            authBinding: providerInput.meta?.authBinding,
+          },
+        };
+        await providersApi.update(nextOfficialProvider, appId);
+        return nextOfficialProvider;
       }
 
       if (appId === "grokbuild" && ensureGrokBuildOfficialSeed) {

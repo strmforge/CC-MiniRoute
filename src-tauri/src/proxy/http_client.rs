@@ -196,6 +196,14 @@ pub fn get() -> Client {
         })
 }
 
+/// Build a request-scoped client for an account-level proxy override.
+///
+/// Account proxy credentials stay inside reqwest's proxy configuration and are
+/// never returned to callers or written to logs.
+pub(crate) fn client_for_proxy(proxy_url: &str) -> Result<Client, String> {
+    build_client(Some(proxy_url))
+}
+
 /// 获取当前代理 URL
 ///
 /// 返回当前配置的代理 URL，None 表示直连。

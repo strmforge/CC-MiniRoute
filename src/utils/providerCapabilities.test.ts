@@ -1,7 +1,10 @@
 import { describe, it, expect } from "vitest";
 import type { Provider } from "@/types";
 import type { AppId } from "@/lib/api";
-import { providerNeedsRouting } from "@/utils/providerCapabilities";
+import {
+  providerNeedsRouting,
+  usesCodexOfficialManagedAuth,
+} from "@/utils/providerCapabilities";
 
 function mkProvider(overrides: Partial<Provider> = {}): Provider {
   return { id: "p1", name: "Test", settingsConfig: {}, ...overrides };
@@ -12,8 +15,8 @@ const codexConfig = (wireApi: "chat_completions" | "responses") =>
   `model_provider = "custom"\n\n[model_providers.custom]\nname = "X"\nbase_url = "https://x.example/v1"\nwire_api = "${wireApi}"\n`;
 
 describe("providerNeedsRouting", () => {
-  it("官方供应商一律不需要路由（即便 providerType 是 OAuth）", () => {
-    const apps: AppId[] = ["claude", "codex", "claude-desktop"];
+  it("非 Codex 官方供应商仍不需要路由（即便 providerType 是 OAuth）", () => {
+    const apps: AppId[] = ["claude", "claude-desktop"];
     for (const app of apps) {
       expect(
         providerNeedsRouting(
@@ -25,6 +28,80 @@ describe("providerNeedsRouting", () => {
         ),
       ).toBe(false);
     }
+  });
+
+  describe("固定 Codex 官方卡片的账号绑定", () => {
+    const official = (mode?: "default" | "account" | "pool") =>
+      mkProvider({
+        id: "codex-official",
+        category: "official",
+        meta: {
+          authBinding: {
+            source: "managed_account",
+            authProvider: "codex_oauth",
+            ...(mode ? { mode } : {}),
+          },
+        },
+      });
+
+    it("无绑定时保持 Codex 原生登录，不需要路由", () => {
+      const provider = mkProvider({
+        id: "codex-official",
+        category: "official",
+      });
+      expect(usesCodexOfficialManagedAuth(provider)).toBe(false);
+      expect(providerNeedsRouting("codex", provider)).toBe(false);
+    });
+
+    it("default 绑定仍保持 Codex 原生登录", () => {
+      const provider = official("default");
+      expect(usesCodexOfficialManagedAuth(provider)).toBe(false);
+      expect(providerNeedsRouting("codex", provider)).toBe(false);
+    });
+
+    it.each(["account", "pool"] as const)(
+      "%s 绑定改用托管账号并需要路由",
+      (mode) => {
+        const provider = official(mode);
+        expect(usesCodexOfficialManagedAuth(provider)).toBe(true);
+        expect(providerNeedsRouting("codex", provider)).toBe(true);
+      },
+    );
+
+    it("旧版只有 accountId 的绑定继续视为固定账号", () => {
+      const provider = mkProvider({
+        id: "codex-official",
+        category: "official",
+        meta: {
+          authBinding: {
+            source: "managed_account",
+            authProvider: "codex_oauth",
+            accountId: "account-1",
+          },
+        },
+      });
+      expect(usesCodexOfficialManagedAuth(provider)).toBe(true);
+      expect(providerNeedsRouting("codex", provider)).toBe(true);
+    });
+
+    it("其他官方卡片不受 Codex 绑定规则影响", () => {
+      expect(
+        providerNeedsRouting(
+          "codex",
+          mkProvider({
+            id: "other-official",
+            category: "official",
+            meta: {
+              authBinding: {
+                source: "managed_account",
+                authProvider: "codex_oauth",
+                mode: "pool",
+              },
+            },
+          }),
+        ),
+      ).toBe(false);
+    });
   });
 
   describe("托管 OAuth：providerType 权威，与 apiFormat 无关（P2）", () => {

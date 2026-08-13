@@ -5,6 +5,30 @@ All notable changes to CC Switch will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.19.3-rc1] - 2026-08-13
+
+This CC MiniRoute test release turns the existing Codex OAuth account list into a usable local multi-account backend. The fixed `OpenAI Official` provider can now stay on Codex's own login, use one CC MiniRoute-managed account, or use a managed account pool without creating a duplicate provider card. Switching back to the native login keeps Codex's `auth.json` untouched.
+
+### Added
+
+- Codex Device Code sign-in for multiple ChatGPT accounts, plus batch import from JSON, JSONL, and plain token lists.
+- Per-account enablement, pool participation, priority, concurrency, expiry handling, and optional proxy settings.
+- Account-pool scheduling with priority, concurrency limits, session affinity, and cooldown/failover after upstream authentication or rate-limit failures.
+- Managed account editing and status controls in the provider form, with clear labels for refreshable and access-token-only accounts.
+
+### Changed
+
+- The fixed `OpenAI Official` provider now offers three explicit modes: Codex native login, one managed account, or the managed account pool.
+- Managed modes inject credentials only inside the local proxy. They do not overwrite Codex's native `auth.json`; returning to native login restores `requires_openai_auth = true`.
+- Existing standalone Codex OAuth providers remain compatible and continue to follow their configured account binding.
+
+### Test status
+
+- TypeScript type checking, focused frontend tests, Rust tests, `cargo check`, renderer build, and native-login round-trip tests pass locally.
+- Real long-running rotation across several paid ChatGPT accounts still needs wider field testing. Treat account-pool mode as a public test feature in this release.
+
+See `docs/release-notes/cc-miniroute-v3.19.3-rc1-zh.md` for the plain-language Chinese release notes.
+
 ## [3.19.2] - 2026-08-06
 
 Development since v3.19.1 is a correctness and hardening pass, with the management UI picking up its two most-requested conveniences. The headline fix is to Codex usage accounting: a rollout file that interleaves several cumulative token counters — a gateway replaying the same snapshot under different rate-limit buckets, or two genuinely distinct counters alternating — could record several times its true usage, and the importer now recognizes both shapes; replaying a real corpus of ~1,900 rollout files lands within 0.001% of an independently computed ideal recount (#3011). A six-part security hardening caps every unbounded read a contributor's audit surfaced — usage scripts, Grok session logs, catalog files, proxy response bodies and their decompression — and the deep-link import dialog now shows two credential fields it previously persisted without rendering. OMO setups regain a working integration on two fronts: when OMO's unified config (`~/.omo/omo.jsonc` or `omo.json`) exists, writes land inside it instead of the legacy file the runtime no longer reads, and the model pickers merge in whatever the installed OpenCode reports at runtime. The MCP, prompt and skill panels gain search, with bulk per-app toggles joining the MCP and skill lists; the Auth Center shows each ChatGPT account's subscription usage inline; and two write-path overhauls — batched SQL backups and batched Codex session imports — cut the worst restore, sync and reimport stalls on large databases.

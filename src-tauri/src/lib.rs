@@ -1606,6 +1606,8 @@ pub fn run() {
             commands::auth_poll_for_account,
             commands::auth_list_accounts,
             commands::auth_get_status,
+            commands::import_codex_oauth_accounts,
+            commands::update_codex_oauth_account,
             commands::auth_remove_account,
             commands::auth_set_default_account,
             commands::auth_logout,

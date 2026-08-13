@@ -120,9 +120,13 @@ import {
   normalizePricingSource,
 } from "./helpers/opencodeFormUtils";
 import { HERMES_DEFAULT_CONFIG } from "./hooks/useHermesFormState";
-import { resolveManagedAccountId } from "@/lib/authBinding";
+import {
+  resolveManagedAccountId,
+  resolveManagedAccountMode,
+} from "@/lib/authBinding";
 import { useOpenClawLiveProviderIds } from "@/hooks/useOpenClaw";
 import { useHermesLiveProviderIds } from "@/hooks/useHermes";
+import { CODEX_OFFICIAL_PROVIDER_ID } from "@/utils/providerCapabilities";
 
 type PresetEntry = {
   id: string;
@@ -552,6 +556,9 @@ function ProviderFormFull({
   const [selectedCodexAccountId, setSelectedCodexAccountId] = useState<
     string | null
   >(() => resolveManagedAccountId(initialData?.meta, "codex_oauth"));
+  const [codexAccountMode, setCodexAccountMode] = useState<
+    "default" | "account" | "pool"
+  >(() => resolveManagedAccountMode(initialData?.meta, "codex_oauth"));
   const [selectedXaiAccountId, setSelectedXaiAccountId] = useState<
     string | null
   >(() => resolveManagedAccountId(initialData?.meta, "xai_oauth"));
@@ -581,6 +588,15 @@ function ProviderFormFull({
         initialData?.meta?.localProxyRequestOverrides?.body,
       ),
   );
+
+  useEffect(() => {
+    setSelectedCodexAccountId(
+      resolveManagedAccountId(initialData?.meta, "codex_oauth"),
+    );
+    setCodexAccountMode(
+      resolveManagedAccountMode(initialData?.meta, "codex_oauth"),
+    );
+  }, [initialData]);
 
   const {
     codexAuth,
@@ -741,6 +757,26 @@ function ProviderFormFull({
     )?.preset;
     return preset && "providerType" in preset ? preset.providerType : undefined;
   }, [presetEntries, selectedPresetId]);
+
+  const isCodexOfficialProvider = useMemo(() => {
+    if (appId !== "codex" || category !== "official") return false;
+    if (providerId === CODEX_OFFICIAL_PROVIDER_ID) return true;
+    if (isEditMode || !selectedPresetId) return false;
+
+    const preset = presetEntries.find(
+      (entry) => entry.id === selectedPresetId,
+    )?.preset;
+    return Boolean(
+      preset && "isOfficial" in preset && preset.isOfficial === true,
+    );
+  }, [
+    appId,
+    category,
+    isEditMode,
+    presetEntries,
+    providerId,
+    selectedPresetId,
+  ]);
 
   const {
     templateValues,
@@ -1184,6 +1220,9 @@ function ProviderFormFull({
     const isCodexOauthProvider =
       presetProviderType === "codex_oauth" ||
       initialData?.meta?.providerType === "codex_oauth";
+    const isCodexManagedAccountProvider =
+      isCodexOauthProvider ||
+      (isCodexOfficialProvider && codexAccountMode !== "default");
     const isXaiOauthProvider =
       presetProviderType === "xai_oauth" ||
       initialData?.meta?.providerType === "xai_oauth";
@@ -1195,7 +1234,7 @@ function ProviderFormFull({
       );
       return;
     }
-    if (isCodexOauthProvider && !isCodexOauthAuthenticated) {
+    if (isCodexManagedAccountProvider && !isCodexOauthAuthenticated) {
       toast.error(
         t("codexOauth.loginRequired", {
           defaultValue: "请先登录 ChatGPT 账号",
@@ -1231,16 +1270,40 @@ function ProviderFormFull({
       );
       return;
     }
-    if (
-      isCodexOauthProvider &&
-      !selectedAccountIsUsable(selectedCodexAccountId, codexOauthAccounts)
-    ) {
-      toast.error(
-        t("managedAuth.selectedAccountUnavailable", {
-          defaultValue: "已绑定账号不存在，请重新选择账号",
-        }),
+    if (isCodexManagedAccountProvider && codexAccountMode === "account") {
+      if (
+        selectedCodexAccountId === null ||
+        !codexOauthAccounts.some(
+          (account) =>
+            account.id === selectedCodexAccountId && !account.requires_reauth,
+        )
+      ) {
+        toast.error(
+          t("managedAuth.selectedAccountUnavailable", {
+            defaultValue: "已绑定账号不存在，请重新选择账号",
+          }),
+        );
+        return;
+      }
+    }
+    if (isCodexManagedAccountProvider && codexAccountMode === "pool") {
+      const now = Date.now();
+      const hasUsablePoolAccount = codexOauthAccounts.some(
+        (account) =>
+          account.enabled !== false &&
+          account.pool_enabled !== false &&
+          !account.requires_reauth &&
+          account.status !== "expired" &&
+          (!account.expires_at_ms || account.expires_at_ms > now),
       );
-      return;
+      if (!hasUsablePoolAccount) {
+        toast.error(
+          t("codexOauth.poolUnavailable", {
+            defaultValue: "账号池中没有已启用且可用的账号",
+          }),
+        );
+        return;
+      }
     }
     if (
       isXaiOauthProvider &&
@@ -1376,6 +1439,9 @@ function ProviderFormFull({
     const isCodexOauthProvider =
       presetProviderType === "codex_oauth" ||
       initialData?.meta?.providerType === "codex_oauth";
+    const isCodexManagedAccountProvider =
+      isCodexOauthProvider ||
+      (isCodexOfficialProvider && codexAccountMode !== "default");
     const isXaiOauthProvider =
       presetProviderType === "xai_oauth" ||
       initialData?.meta?.providerType === "xai_oauth";
@@ -1577,11 +1643,15 @@ function ProviderFormFull({
             authProvider: "github_copilot",
             accountId: selectedGitHubAccountId ?? undefined,
           }
-        : isCodexOauthProvider
+        : isCodexManagedAccountProvider
           ? {
               source: "managed_account",
               authProvider: "codex_oauth",
-              accountId: selectedCodexAccountId ?? undefined,
+              mode: codexAccountMode,
+              accountId:
+                codexAccountMode === "account"
+                  ? (selectedCodexAccountId ?? undefined)
+                  : undefined,
             }
           : isXaiOauthProvider
             ? {
@@ -1774,6 +1844,8 @@ function ProviderFormFull({
 
   const handlePresetChange = (value: string) => {
     setSelectedPresetId(value);
+    setCodexAccountMode("default");
+    setSelectedCodexAccountId(null);
     if (value === "custom") {
       setActivePreset(null);
       form.reset(defaultValues);
@@ -2242,6 +2314,8 @@ function ProviderFormFull({
               isCodexOauthAuthenticated={isCodexOauthAuthenticated}
               selectedCodexAccountId={selectedCodexAccountId}
               onCodexAccountSelect={setSelectedCodexAccountId}
+              codexAccountMode={codexAccountMode}
+              onCodexAccountModeChange={setCodexAccountMode}
               codexFastMode={codexFastMode}
               onCodexFastModeChange={setCodexFastMode}
               isXaiOauthAuthenticated={isXaiOauthAuthenticated}
@@ -2293,6 +2367,11 @@ function ProviderFormFull({
           {appId === "codex" && (
             <CodexFormFields
               providerId={providerId}
+              isCodexOfficialProvider={isCodexOfficialProvider}
+              selectedCodexAccountId={selectedCodexAccountId}
+              onCodexAccountSelect={setSelectedCodexAccountId}
+              codexAccountMode={codexAccountMode}
+              onCodexAccountModeChange={setCodexAccountMode}
               isXaiOauthPreset={
                 presetProviderType === "xai_oauth" ||
                 initialData?.meta?.providerType === "xai_oauth"

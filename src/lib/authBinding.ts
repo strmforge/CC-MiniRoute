@@ -8,7 +8,8 @@ export function resolveManagedAccountId(
 
   if (
     binding?.source === "managed_account" &&
-    binding.authProvider === authProvider
+    binding.authProvider === authProvider &&
+    (binding.mode === undefined || binding.mode === "account")
   ) {
     return binding.accountId ?? null;
   }
@@ -18,4 +19,18 @@ export function resolveManagedAccountId(
   }
 
   return null;
+}
+
+export function resolveManagedAccountMode(
+  meta: ProviderMeta | undefined,
+  authProvider: string,
+): "default" | "account" | "pool" {
+  const binding = meta?.authBinding;
+  if (
+    binding?.source !== "managed_account" ||
+    binding.authProvider !== authProvider
+  ) {
+    return "default";
+  }
+  return binding.mode ?? (binding.accountId ? "account" : "default");
 }

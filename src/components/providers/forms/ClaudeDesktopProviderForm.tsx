@@ -68,7 +68,10 @@ import {
   providersApi,
   type ClaudeDesktopDefaultRoute,
 } from "@/lib/api/providers";
-import { resolveManagedAccountId } from "@/lib/authBinding";
+import {
+  resolveManagedAccountId,
+  resolveManagedAccountMode,
+} from "@/lib/authBinding";
 import { useCopilotAuth, useCodexOauth, useXaiOauth } from "./hooks";
 import { isOAuthProviderType } from "@/config/constants";
 
@@ -284,6 +287,9 @@ export function ClaudeDesktopProviderForm({
   const [selectedCodexAccountId, setSelectedCodexAccountId] = useState<
     string | null
   >(() => resolveManagedAccountId(initialData?.meta, "codex_oauth"));
+  const [codexAccountMode, setCodexAccountMode] = useState<
+    "default" | "account" | "pool"
+  >(() => resolveManagedAccountMode(initialData?.meta, "codex_oauth"));
   const [selectedXaiAccountId, setSelectedXaiAccountId] = useState<
     string | null
   >(() => resolveManagedAccountId(initialData?.meta, "xai_oauth"));
@@ -358,6 +364,15 @@ export function ClaudeDesktopProviderForm({
     defaultValues,
     mode: "onSubmit",
   });
+
+  useEffect(() => {
+    setSelectedCodexAccountId(
+      resolveManagedAccountId(initialData?.meta, "codex_oauth"),
+    );
+    setCodexAccountMode(
+      resolveManagedAccountMode(initialData?.meta, "codex_oauth"),
+    );
+  }, [initialData]);
 
   useEffect(() => {
     onSubmittingChange?.(form.formState.isSubmitting || isFetchingModels);
@@ -476,6 +491,8 @@ export function ClaudeDesktopProviderForm({
 
   const handlePresetChange = (value: string) => {
     setSelectedPresetId(value);
+    setCodexAccountMode("default");
+    setSelectedCodexAccountId(null);
 
     if (value === "custom") {
       setActivePreset(null);
@@ -661,6 +678,44 @@ export function ClaudeDesktopProviderForm({
       return;
     }
     if (
+      activeProviderType === "codex_oauth" &&
+      codexAccountMode === "account"
+    ) {
+      if (
+        selectedCodexAccountId === null ||
+        !codexOauthAccounts.some(
+          (account) =>
+            account.id === selectedCodexAccountId && !account.requires_reauth,
+        )
+      ) {
+        toast.error(
+          t("managedAuth.selectedAccountUnavailable", {
+            defaultValue: "已绑定账号不存在或需要重新登录，请重新选择账号",
+          }),
+        );
+        return;
+      }
+    }
+    if (activeProviderType === "codex_oauth" && codexAccountMode === "pool") {
+      const now = Date.now();
+      const hasUsablePoolAccount = codexOauthAccounts.some(
+        (account) =>
+          account.enabled !== false &&
+          account.pool_enabled !== false &&
+          !account.requires_reauth &&
+          account.status !== "expired" &&
+          (!account.expires_at_ms || account.expires_at_ms > now),
+      );
+      if (!hasUsablePoolAccount) {
+        toast.error(
+          t("codexOauth.poolUnavailable", {
+            defaultValue: "账号池中没有已启用且可用的账号",
+          }),
+        );
+        return;
+      }
+    }
+    if (
       managedAuthState &&
       !selectedAccountIsUsable(
         managedAuthState.accountId,
@@ -786,7 +841,11 @@ export function ClaudeDesktopProviderForm({
           ? {
               source: "managed_account",
               authProvider: "codex_oauth",
-              accountId: selectedCodexAccountId ?? undefined,
+              mode: codexAccountMode,
+              accountId:
+                codexAccountMode === "account"
+                  ? (selectedCodexAccountId ?? undefined)
+                  : undefined,
             }
           : activeProviderType === "xai_oauth"
             ? {
@@ -888,6 +947,8 @@ export function ClaudeDesktopProviderForm({
                   <CodexOAuthSection
                     selectedAccountId={selectedCodexAccountId}
                     onAccountSelect={setSelectedCodexAccountId}
+                    accountMode={codexAccountMode}
+                    onAccountModeChange={setCodexAccountMode}
                     fastModeEnabled={codexFastMode}
                     onFastModeChange={setCodexFastMode}
                   />

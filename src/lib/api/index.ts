@@ -29,4 +29,8 @@ export type {
   ManagedAuthAccount,
   ManagedAuthStatus,
   ManagedAuthDeviceCodeResponse,
+  CodexOAuthImportOptions,
+  CodexOAuthImportItem,
+  CodexOAuthImportResult,
+  CodexOAuthAccountUpdate,
 } from "./auth";

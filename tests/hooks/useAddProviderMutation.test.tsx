@@ -10,6 +10,7 @@ const apiMocks = vi.hoisted(() => ({
   ensureClaudeDesktopOfficialProvider: vi.fn(),
   ensureCodexOfficialProvider: vi.fn(),
   getAll: vi.fn(),
+  update: vi.fn(),
   updateTrayMenu: vi.fn(),
 }));
 
@@ -25,6 +26,7 @@ vi.mock("@/lib/api", () => ({
     ensureCodexOfficialProvider: (...args: unknown[]) =>
       apiMocks.ensureCodexOfficialProvider(...args),
     getAll: (...args: unknown[]) => apiMocks.getAll(...args),
+    update: (...args: unknown[]) => apiMocks.update(...args),
     updateTrayMenu: (...args: unknown[]) => apiMocks.updateTrayMenu(...args),
   },
   sessionsApi: {},
@@ -64,6 +66,7 @@ beforeEach(() => {
     .mockResolvedValue(true);
   apiMocks.ensureCodexOfficialProvider.mockReset().mockResolvedValue(true);
   apiMocks.getAll.mockReset().mockResolvedValue({});
+  apiMocks.update.mockReset().mockResolvedValue(true);
   apiMocks.updateTrayMenu.mockReset().mockResolvedValue(true);
   uuidMocks.generateUUID.mockReset().mockReturnValue("generated-uuid");
 });
@@ -165,6 +168,64 @@ describe("useAddProviderMutation", () => {
     expect(apiMocks.ensureCodexOfficialProvider).toHaveBeenCalledTimes(1);
     expect(apiMocks.getAll).toHaveBeenCalledWith("codex");
     expect(apiMocks.add).not.toHaveBeenCalled();
-    expect(persistedProvider).toEqual(seedProvider);
+    expect(apiMocks.update).toHaveBeenCalledWith(
+      {
+        ...seedProvider,
+        meta: { authBinding: undefined },
+      },
+      "codex",
+    );
+    expect(persistedProvider).toEqual({
+      ...seedProvider,
+      meta: { authBinding: undefined },
+    });
+  });
+
+  it("applies a managed account pool to the fixed Codex official seed", async () => {
+    const seedProvider: Provider = {
+      id: "codex-official",
+      name: "OpenAI Official",
+      settingsConfig: { auth: {}, config: "" },
+      category: "official",
+      meta: {
+        usage_script: {
+          enabled: false,
+          language: "javascript",
+          code: "",
+        },
+      },
+    };
+    apiMocks.getAll.mockResolvedValueOnce({
+      "codex-official": seedProvider,
+    });
+    const { wrapper } = createWrapper();
+    const { result } = renderHook(() => useAddProviderMutation("codex"), {
+      wrapper,
+    });
+
+    const authBinding = {
+      source: "managed_account" as const,
+      authProvider: "codex_oauth",
+      mode: "pool" as const,
+    };
+    const persistedProvider = await act(async () =>
+      result.current.mutateAsync({
+        name: "OpenAI Official",
+        settingsConfig: { auth: {}, config: "" },
+        category: "official",
+        meta: { authBinding },
+        ensureCodexOfficialSeed: true,
+      }),
+    );
+
+    const expected = {
+      ...seedProvider,
+      meta: {
+        ...seedProvider.meta,
+        authBinding,
+      },
+    };
+    expect(apiMocks.update).toHaveBeenCalledWith(expected, "codex");
+    expect(persistedProvider).toEqual(expected);
   });
 });
