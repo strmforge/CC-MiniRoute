@@ -380,6 +380,7 @@ export interface Settings {
   preserveCodexOfficialAuthOnSwitch?: boolean;
   // Expose non-GPT Codex providers through the local proxy's shared model catalog
   enableCodexMultiProviderBridge?: boolean;
+  enableCodexStableProxyEntry?: boolean;
   // Run official Codex under the shared "custom" provider id so future
   // sessions share one resume-history bucket with third-party providers
   unifyCodexSessionHistory?: boolean;

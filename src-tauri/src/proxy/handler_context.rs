@@ -132,8 +132,16 @@ impl RequestContext {
             session_result.client_provided
         );
 
+        // The fixed MiniRoute entry owns one shared selector too. It needs the
+        // same exact-model ownership resolution as the explicit bridge toggle,
+        // otherwise a visible native model would fall through to the selected
+        // GPT provider.
+        let codex_shared_catalog_enabled = {
+            let settings = crate::settings::get_settings();
+            settings.enable_codex_multi_provider_bridge || settings.enable_codex_stable_proxy_entry
+        };
         let bridge_candidate = app_type == AppType::Codex
-            && crate::settings::get_settings().enable_codex_multi_provider_bridge
+            && codex_shared_catalog_enabled
             && request_model != "unknown"
             && !crate::codex_config::is_codex_openai_family_model(&request_model);
 

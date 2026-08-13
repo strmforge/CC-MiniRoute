@@ -14,6 +14,10 @@ use std::process::{Command, Stdio};
 use toml_edit::DocumentMut;
 
 pub const CC_SWITCH_CODEX_MODEL_PROVIDER_ID: &str = "custom";
+/// Exact provider name used by the opt-in fixed local proxy entry. Keeping this
+/// distinct from a user's arbitrary `custom` entry lets crash cleanup remove
+/// only MiniRoute-owned state.
+pub const CC_MINIROUTE_CODEX_STABLE_PROXY_PROVIDER_NAME: &str = "CC MiniRoute";
 /// Temporary model-provider id used while the built-in `codex-official`
 /// provider is routed through CC Switch.  A dedicated id is an ownership
 /// marker: unlike a generic localhost `base_url`, it can be detected and
@@ -2171,6 +2175,116 @@ fn codex_official_provider_table(
     table
 }
 
+/// Project Codex through one stable local provider entry. The entry deliberately
+/// keeps the `custom` provider identity so Codex retains the local/gateway
+/// compaction behavior used for third-party routes. `requires_openai_auth`
+/// still makes Codex send its existing ChatGPT bearer to the local proxy; the
+/// proxy forwards that bearer only when the currently selected upstream is the
+/// built-in official provider.
+pub fn apply_codex_stable_proxy_route(
+    config_text: &str,
+    proxy_base_url: &str,
+) -> Result<String, AppError> {
+    let mut doc = config_text
+        .parse::<DocumentMut>()
+        .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))?;
+
+    doc.as_table_mut().remove("experimental_bearer_token");
+    doc["model_provider"] = toml_edit::value(CC_SWITCH_CODEX_MODEL_PROVIDER_ID);
+
+    let mut providers = match doc.as_table_mut().remove("model_providers") {
+        Some(item) => item.into_table().map_err(|_| {
+            AppError::Message(
+                "Invalid Codex config.toml: model_providers must be a table".to_string(),
+            )
+        })?,
+        None => {
+            let mut table = toml_edit::Table::new();
+            table.set_implicit(true);
+            table
+        }
+    };
+    remove_codex_proxy_placeholders_from_providers(&mut providers);
+
+    let mut table = toml_edit::Table::new();
+    table["name"] = toml_edit::value(CC_MINIROUTE_CODEX_STABLE_PROXY_PROVIDER_NAME);
+    table["base_url"] = toml_edit::value(proxy_base_url.trim_end_matches('/'));
+    table["wire_api"] = toml_edit::value("responses");
+    table["requires_openai_auth"] = toml_edit::value(true);
+    // MiniRoute currently exposes HTTP/SSE only. Explicitly avoiding WebSocket
+    // retries keeps the fixed entry predictable on ordinary proxy setups.
+    table["supports_websockets"] = toml_edit::value(false);
+    providers.insert(
+        CC_SWITCH_CODEX_MODEL_PROVIDER_ID,
+        toml_edit::Item::Table(table),
+    );
+    doc["model_providers"] = toml_edit::Item::Table(providers);
+    Ok(doc.to_string())
+}
+
+fn table_matches_codex_stable_proxy_provider(table: &toml_edit::Table) -> bool {
+    table.get("name").and_then(|item| item.as_str())
+        == Some(CC_MINIROUTE_CODEX_STABLE_PROXY_PROVIDER_NAME)
+        && table
+            .get("requires_openai_auth")
+            .and_then(|item| item.as_bool())
+            == Some(true)
+        && table.get("wire_api").and_then(|item| item.as_str()) == Some("responses")
+        && table
+            .get("base_url")
+            .and_then(|item| item.as_str())
+            // A MiniRoute listener may be bound to a LAN address rather than a
+            // loopback address. The exact ownership marker is the dedicated
+            // name plus the complete Responses/auth shape above; limiting this
+            // to 127.0.0.1 would make the next switch fall back to legacy
+            // config rewrites for a valid LAN-bound proxy.
+            .is_some_and(|url| url.starts_with("http://") && url.trim_end().ends_with("/v1"))
+}
+
+/// Whether the live configuration is the MiniRoute-owned fixed proxy entry.
+pub fn codex_config_has_stable_proxy_route(config_text: &str) -> bool {
+    config_text.parse::<DocumentMut>().ok().is_some_and(|doc| {
+        doc.get("model_provider").and_then(|item| item.as_str())
+            == Some(CC_SWITCH_CODEX_MODEL_PROVIDER_ID)
+            && doc
+                .get("model_providers")
+                .and_then(|item| item.as_table())
+                .and_then(|providers| providers.get(CC_SWITCH_CODEX_MODEL_PROVIDER_ID))
+                .and_then(|item| item.as_table())
+                .is_some_and(table_matches_codex_stable_proxy_provider)
+    })
+}
+
+/// Remove only the fixed proxy entry that MiniRoute owns. Normal teardown uses
+/// the transactional live backup; this is intentionally a narrow crash fallback.
+pub fn remove_codex_stable_proxy_route(config_text: &str) -> Result<String, AppError> {
+    let mut doc = config_text
+        .parse::<DocumentMut>()
+        .map_err(|e| AppError::Message(format!("Invalid Codex config.toml: {e}")))?;
+    let matches_owned = doc
+        .get("model_providers")
+        .and_then(|item| item.as_table())
+        .and_then(|providers| providers.get(CC_SWITCH_CODEX_MODEL_PROVIDER_ID))
+        .and_then(|item| item.as_table())
+        .is_some_and(table_matches_codex_stable_proxy_provider);
+    if !matches_owned {
+        return Ok(config_text.to_string());
+    }
+
+    if doc.get("model_provider").and_then(|item| item.as_str())
+        == Some(CC_SWITCH_CODEX_MODEL_PROVIDER_ID)
+    {
+        doc.as_table_mut().remove("model_provider");
+    }
+    if let Some(providers) = doc["model_providers"].as_table_mut() {
+        providers.remove(CC_SWITCH_CODEX_MODEL_PROVIDER_ID);
+        if providers.is_empty() {
+            doc.as_table_mut().remove("model_providers");
+        }
+    }
+    Ok(doc.to_string())
+}
+
 fn codex_unified_official_provider_table() -> toml_edit::Table {
     codex_official_provider_table(None, true)
 }
@@ -2850,6 +2964,62 @@ mod tests {
             custom.get("wire_api").and_then(|v| v.as_str()),
             Some("responses")
         );
+    }
+
+    #[test]
+    fn stable_proxy_route_preserves_unrelated_config_and_is_reversible() {
+        let input = r#"model = "gpt-5.6-sol"
+experimental_bearer_token = "PROXY_MANAGED"
+
+[mcp_servers.node_repl]
+command = "node_repl"
+
+[model_providers.previous]
+name = "Previous"
+base_url = "https://relay.example/v1"
+"#;
+        let routed = apply_codex_stable_proxy_route(input, "http://127.0.0.1:15721/v1")
+            .expect("apply stable route");
+        assert!(codex_config_has_stable_proxy_route(&routed));
+        assert!(routed.contains("[mcp_servers.node_repl]"));
+        assert!(routed.contains("[model_providers.previous]"));
+        assert!(!routed.contains("PROXY_MANAGED"));
+
+        let doc: toml::Value = toml::from_str(&routed).expect("parse routed config");
+        assert_eq!(
+            doc.get("model_provider").and_then(toml::Value::as_str),
+            Some(CC_SWITCH_CODEX_MODEL_PROVIDER_ID)
+        );
+        let custom = &doc["model_providers"][CC_SWITCH_CODEX_MODEL_PROVIDER_ID];
+        assert_eq!(
+            custom.get("name").and_then(toml::Value::as_str),
+            Some(CC_MINIROUTE_CODEX_STABLE_PROXY_PROVIDER_NAME)
+        );
+        assert_eq!(
+            custom
+                .get("requires_openai_auth")
+                .and_then(toml::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            custom
+                .get("supports_websockets")
+                .and_then(toml::Value::as_bool),
+            Some(false)
+        );
+
+        let cleaned = remove_codex_stable_proxy_route(&routed).expect("remove stable route");
+        assert!(!codex_config_has_stable_proxy_route(&cleaned));
+        assert!(cleaned.contains("[mcp_servers.node_repl]"));
+        assert!(cleaned.contains("[model_providers.previous]"));
+        assert!(!cleaned.contains("model_provider = \"custom\""));
+    }
+
+    #[test]
+    fn stable_proxy_route_detects_lan_bound_miniroute_listener() {
+        let routed = apply_codex_stable_proxy_route("", "http://192.168.1.44:15721/v1")
+            .expect("apply LAN route");
+        assert!(codex_config_has_stable_proxy_route(&routed));
     }
 
     #[test]

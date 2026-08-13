@@ -116,6 +116,16 @@ export function CodexAuthSettings({
       />
 
       <ToggleRow
+        icon={<Route className="h-4 w-4 text-amber-500" />}
+        title={t("settings.enableCodexStableProxyEntry")}
+        description={t("settings.enableCodexStableProxyEntryDescription")}
+        checked={settings.enableCodexStableProxyEntry ?? false}
+        onCheckedChange={(value) =>
+          onChange({ enableCodexStableProxyEntry: value })
+        }
+      />
+
+      <ToggleRow
         icon={<History className="h-4 w-4 text-sky-500" />}
         title={t("settings.unifyCodexSessionHistory")}
         description={t("settings.unifyCodexSessionHistoryDescription")}

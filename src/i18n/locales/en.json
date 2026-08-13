@@ -692,6 +692,8 @@
     "preserveCodexOfficialAuthOnSwitchDescription": "Controls third-party switches when local routing is off. Takeover routing always preserves the Codex official login.",
     "enableCodexMultiProviderBridge": "Show non-GPT Codex models together",
     "enableCodexMultiProviderBridgeDescription": "Requires Codex local routing. Adds declared non-GPT models to one selector and pins each request to its owning provider without changing the current GPT provider.",
+    "enableCodexStableProxyEntry": "Experimental: fixed Codex local proxy entry",
+    "enableCodexStableProxyEntryDescription": "Requires Codex local routing. Codex stays on a CC MiniRoute custom entry while official and gateway targets switch inside the proxy. The official bearer is forwarded only to OpenAI; third-party requests use their own provider key. Disabling routing restores the backup.",
     "unifyCodexSessionHistory": "Unified Codex session history",
     "unifyCodexSessionHistoryDescription": "When enabled, the official subscription runs under the shared \"custom\" provider id so official and third-party sessions appear in one history list, optionally migrating existing official sessions in (backed up first). When turning it off, the migrated sessions can be restored from backup. Note: resuming an old session across providers may fail because its encrypted_content reasoning can only be decrypted by the backend that created it.",
     "unifyCodexHistoryRestoreCompleted": "Official session history restored from backup ({{files}} session files, {{rows}} index rows)",

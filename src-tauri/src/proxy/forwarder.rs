@@ -56,6 +56,14 @@ fn validate_codex_official_authorization(headers: &http::HeaderMap) -> Result<()
     }
 }
 
+/// The fixed MiniRoute entry makes every Codex request arrive with the native
+/// ChatGPT Authorization header. That header is only valid for the built-in
+/// official upstream; every gateway/native provider must receive adapter-owned
+/// credentials instead.
+fn may_passthrough_codex_native_authorization(app_type: &AppType, provider: &Provider) -> bool {
+    matches!(app_type, AppType::Codex) && super::providers::is_codex_official_provider(provider)
+}
+
 pub struct ForwardResult {
     pub response: ProxyResponse,
     pub provider: Provider,
@@ -1155,8 +1163,8 @@ impl RequestForwarder {
             && super::providers::should_convert_codex_responses_to_chat(provider, endpoint);
         let codex_responses_to_anthropic = matches!(app_type, AppType::Codex | AppType::GrokBuild)
             && super::providers::should_convert_codex_responses_to_anthropic(provider, endpoint);
-        let codex_official_auth_passthrough = matches!(app_type, AppType::Codex)
-            && super::providers::is_codex_official_provider(provider);
+        let codex_official_auth_passthrough =
+            may_passthrough_codex_native_authorization(app_type, provider);
 
         if codex_official_auth_passthrough {
             validate_codex_official_authorization(headers)?;
@@ -4423,6 +4431,29 @@ mod tests {
                 ErrorCategory::NonRetryable
             );
         }
+    }
+
+    #[test]
+    fn codex_native_authorization_only_passthroughs_to_builtin_official_target() {
+        let mut official = test_provider_with_type(None);
+        official.id = crate::database::CODEX_OFFICIAL_PROVIDER_ID.to_string();
+        official.category = Some("official".to_string());
+        assert!(may_passthrough_codex_native_authorization(
+            &AppType::Codex,
+            &official
+        ));
+
+        let mut third_party = test_provider_with_type(None);
+        third_party.id = "deepseek".to_string();
+        third_party.category = Some("cn_official".to_string());
+        assert!(!may_passthrough_codex_native_authorization(
+            &AppType::Codex,
+            &third_party
+        ));
+        assert!(!may_passthrough_codex_native_authorization(
+            &AppType::Claude,
+            &official
+        ));
     }
 
     #[test]

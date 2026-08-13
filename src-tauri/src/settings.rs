@@ -386,6 +386,11 @@ pub struct AppSettings {
     /// Opt-in: disabled by default so upstream CC Switch routing is unchanged.
     #[serde(default)]
     pub enable_codex_multi_provider_bridge: bool,
+    /// Keep Codex pointed at one MiniRoute-owned local provider while local
+    /// routing is active. Provider switches then happen inside MiniRoute
+    /// without rewriting Codex's provider identity or auth file.
+    #[serde(default)]
+    pub enable_codex_stable_proxy_entry: bool,
     /// Run official Codex providers under the shared "custom" model_provider id
     /// so official sessions share one resume-history bucket with third-party
     /// providers. Opt-in: defaults to false.
@@ -525,6 +530,7 @@ impl Default for AppSettings {
             show_profile_switcher: true,
             preserve_codex_official_auth_on_switch: false,
             enable_codex_multi_provider_bridge: false,
+            enable_codex_stable_proxy_entry: false,
             unify_codex_session_history: false,
             unify_codex_migrate_existing: None,
             failover_confirmed: None,
@@ -947,6 +953,19 @@ pub fn preserve_codex_official_auth_on_switch() -> bool {
             e.into_inner()
         })
         .preserve_codex_official_auth_on_switch
+}
+
+/// Whether Codex should keep one MiniRoute-owned `custom` entry while local
+/// routing is active. This is independent from the legacy preserve-auth switch:
+/// the stable entry always leaves `auth.json` untouched.
+pub fn enable_codex_stable_proxy_entry() -> bool {
+    settings_store()
+        .read()
+        .unwrap_or_else(|e| {
+            log::warn!("设置锁已毒化，使用恢复值: {e}");
+            e.into_inner()
+        })
+        .enable_codex_stable_proxy_entry
 }
 
 pub fn unify_codex_session_history() -> bool {

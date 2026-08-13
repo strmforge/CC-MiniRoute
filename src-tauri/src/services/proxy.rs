@@ -370,6 +370,26 @@ impl ProxyService {
         &self,
         provider: &Provider,
     ) -> Result<(), String> {
+        if self.codex_live_uses_stable_proxy_entry() {
+            let existing_live = self.read_codex_live()?;
+            if existing_live
+                .get("config")
+                .and_then(Value::as_str)
+                .is_some_and(crate::codex_config::codex_config_has_stable_proxy_route)
+            {
+                // A provider save can change the shared catalog. Unlike a
+                // provider switch, this intentional refresh preserves the same
+                // fixed entry and never touches auth.json.
+                let (_, proxy_codex_base_url) = self.build_proxy_urls().await?;
+                self.write_codex_stable_proxy_live(
+                    &existing_live,
+                    &proxy_codex_base_url,
+                    provider,
+                )?;
+                return Ok(());
+            }
+        }
+
         let existing_live = self.read_codex_live().ok();
         let mut effective_settings = build_effective_settings_with_common_config(
             self.db.as_ref(),
@@ -1569,16 +1589,25 @@ impl ProxyService {
             log::info!("Claude Live 配置已接管，代理地址: {proxy_url}");
         }
 
-        // Codex: project the selected provider through the local Responses endpoint.
+        // Codex: the optional stable entry keeps the client configuration fixed.
+        // Its active upstream is held by MiniRoute, not by config.toml.
         if let Ok(mut live_config) = self.read_codex_live() {
             let codex_provider = self.require_current_provider_for_app(&AppType::Codex)?;
-            self.apply_codex_takeover_fields_for_provider(
-                &mut live_config,
-                &proxy_codex_base_url,
-                &codex_provider,
-            )?;
+            if crate::settings::enable_codex_stable_proxy_entry() {
+                self.write_codex_stable_proxy_live(
+                    &live_config,
+                    &proxy_codex_base_url,
+                    &codex_provider,
+                )?;
+            } else {
+                self.apply_codex_takeover_fields_for_provider(
+                    &mut live_config,
+                    &proxy_codex_base_url,
+                    &codex_provider,
+                )?;
 
-            self.write_codex_takeover_live_for_provider(&live_config, Some(&codex_provider))?;
+                self.write_codex_takeover_live_for_provider(&live_config, Some(&codex_provider))?;
+            }
             log::info!("Codex Live 配置已接管，代理地址: {proxy_codex_base_url}");
         }
 
@@ -1634,13 +1663,24 @@ impl ProxyService {
             AppType::Codex => {
                 let mut live_config = self.read_codex_live()?;
                 let codex_provider = self.require_current_provider_for_app(&AppType::Codex)?;
-                self.apply_codex_takeover_fields_for_provider(
-                    &mut live_config,
-                    &proxy_codex_base_url,
-                    &codex_provider,
-                )?;
+                if crate::settings::enable_codex_stable_proxy_entry() {
+                    self.write_codex_stable_proxy_live(
+                        &live_config,
+                        &proxy_codex_base_url,
+                        &codex_provider,
+                    )?;
+                } else {
+                    self.apply_codex_takeover_fields_for_provider(
+                        &mut live_config,
+                        &proxy_codex_base_url,
+                        &codex_provider,
+                    )?;
 
-                self.write_codex_takeover_live_for_provider(&live_config, Some(&codex_provider))?;
+                    self.write_codex_takeover_live_for_provider(
+                        &live_config,
+                        Some(&codex_provider),
+                    )?;
+                }
                 log::info!("Codex Live 配置已接管，代理地址: {proxy_codex_base_url}");
             }
             AppType::Gemini => {
@@ -1711,16 +1751,24 @@ impl ProxyService {
             AppType::Codex => {
                 if let Ok(mut live_config) = self.read_codex_live() {
                     let codex_provider = self.require_current_provider_for_app(&AppType::Codex)?;
-                    self.apply_codex_takeover_fields_for_provider(
-                        &mut live_config,
-                        &proxy_codex_base_url,
-                        &codex_provider,
-                    )?;
+                    if crate::settings::enable_codex_stable_proxy_entry() {
+                        self.write_codex_stable_proxy_live(
+                            &live_config,
+                            &proxy_codex_base_url,
+                            &codex_provider,
+                        )?;
+                    } else {
+                        self.apply_codex_takeover_fields_for_provider(
+                            &mut live_config,
+                            &proxy_codex_base_url,
+                            &codex_provider,
+                        )?;
 
-                    self.write_codex_takeover_live_for_provider(
-                        &live_config,
-                        Some(&codex_provider),
-                    )?;
+                        self.write_codex_takeover_live_for_provider(
+                            &live_config,
+                            Some(&codex_provider),
+                        )?;
+                    }
                 }
             }
             AppType::Gemini => {
@@ -2119,7 +2167,12 @@ impl ProxyService {
         }
 
         if let Some(cfg_str) = config.get("config").and_then(|v| v.as_str()) {
-            let updated = Self::remove_local_toml_base_url(cfg_str);
+            // Stable route detection includes its local base URL, so remove the
+            // MiniRoute-owned table first. This fallback only runs without a
+            // transactional live backup.
+            let updated = crate::codex_config::remove_codex_stable_proxy_route(cfg_str)
+                .map_err(|e| format!("清理 Codex 固定代理路由失败: {e}"))?;
+            let updated = Self::remove_local_toml_base_url(&updated);
             let updated =
                 crate::codex_config::remove_codex_experimental_bearer_token_if(&updated, |token| {
                     token == PROXY_TOKEN_PLACEHOLDER
@@ -2286,7 +2339,23 @@ impl ProxyService {
             || config
                 .get("config")
                 .and_then(|v| v.as_str())
-                .is_some_and(crate::codex_config::codex_config_has_official_proxy_route)
+                .is_some_and(|config_text| {
+                    crate::codex_config::codex_config_has_official_proxy_route(config_text)
+                        || crate::codex_config::codex_config_has_stable_proxy_route(config_text)
+                })
+    }
+
+    fn codex_live_uses_stable_proxy_entry(&self) -> bool {
+        self.read_codex_live()
+            .ok()
+            .and_then(|live| {
+                live.get("config")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .is_some_and(|config_text| {
+                crate::codex_config::codex_config_has_stable_proxy_route(&config_text)
+            })
     }
 
     fn is_gemini_live_taken_over(config: &Value) -> bool {
@@ -2487,12 +2556,18 @@ impl ProxyService {
             .is_some();
         let live_taken_over = self.detect_takeover_in_live_config_for_app(&app_type_enum);
         let should_sync_backup = has_backup || live_taken_over;
+        // Once installed, a stable entry stays stable until takeover is
+        // explicitly disabled. This prevents a settings toggle from making the
+        // next provider switch unexpectedly rewrite a still-live entry.
+        let stable_codex_switch = matches!(app_type_enum, AppType::Codex)
+            && live_taken_over
+            && self.codex_live_uses_stable_proxy_entry();
 
         // All fallible backup/live writes must finish before committing the logical
         // current provider. Otherwise a failed hot switch leaves the UI pointing at
         // the new provider while the proxy still serves the old one (and the next
         // query may fall back to the first provider).
-        let previous_backup = if should_sync_backup {
+        let previous_backup = if should_sync_backup && !stable_codex_switch {
             self.db
                 .get_live_backup(app_type_enum.as_str())
                 .await
@@ -2511,7 +2586,7 @@ impl ProxyService {
             };
 
         let prepare_result: Result<(), String> = async {
-            if should_sync_backup {
+            if should_sync_backup && !stable_codex_switch {
                 self.update_live_backup_from_provider_inner(app_type, &provider)
                     .await?;
 
@@ -2556,29 +2631,33 @@ impl ProxyService {
         .await;
 
         if let Err(error) = prepare_result {
-            self.rollback_hot_switch_preparation(
-                &app_type_enum,
-                previous_backup.as_ref(),
-                previous_provider_id.as_deref(),
-                should_sync_backup,
-                live_taken_over,
-                previous_live_before_direct_write.as_ref(),
-            )
-            .await;
+            if !stable_codex_switch {
+                self.rollback_hot_switch_preparation(
+                    &app_type_enum,
+                    previous_backup.as_ref(),
+                    previous_provider_id.as_deref(),
+                    should_sync_backup,
+                    live_taken_over,
+                    previous_live_before_direct_write.as_ref(),
+                )
+                .await;
+            }
             return Err(error);
         }
 
         if let Err(error) = crate::settings::set_current_provider(&app_type_enum, Some(provider_id))
         {
-            self.rollback_hot_switch_preparation(
-                &app_type_enum,
-                previous_backup.as_ref(),
-                previous_provider_id.as_deref(),
-                should_sync_backup,
-                live_taken_over,
-                previous_live_before_direct_write.as_ref(),
-            )
-            .await;
+            if !stable_codex_switch {
+                self.rollback_hot_switch_preparation(
+                    &app_type_enum,
+                    previous_backup.as_ref(),
+                    previous_provider_id.as_deref(),
+                    should_sync_backup,
+                    live_taken_over,
+                    previous_live_before_direct_write.as_ref(),
+                )
+                .await;
+            }
             return Err(format!("更新本地当前供应商失败: {error}"));
         }
         if let Err(error) = self
@@ -2591,15 +2670,17 @@ impl ProxyService {
             ) {
                 log::error!("数据库切换失败后恢复本地当前供应商失败: {rollback_error}");
             }
-            self.rollback_hot_switch_preparation(
-                &app_type_enum,
-                previous_backup.as_ref(),
-                previous_provider_id.as_deref(),
-                should_sync_backup,
-                live_taken_over,
-                previous_live_before_direct_write.as_ref(),
-            )
-            .await;
+            if !stable_codex_switch {
+                self.rollback_hot_switch_preparation(
+                    &app_type_enum,
+                    previous_backup.as_ref(),
+                    previous_provider_id.as_deref(),
+                    should_sync_backup,
+                    live_taken_over,
+                    previous_live_before_direct_write.as_ref(),
+                )
+                .await;
+            }
             return Err(format!("更新当前供应商失败: {error}"));
         }
 
@@ -2800,12 +2881,41 @@ impl ProxyService {
         Ok(())
     }
 
+    /// Write the stable MiniRoute-owned `custom` entry without changing Codex's
+    /// login file. The shared model catalog is rebuilt only when the entry is
+    /// installed or an explicit provider save needs to refresh its models.
+    fn write_codex_stable_proxy_live(
+        &self,
+        current_live: &Value,
+        proxy_base_url: &str,
+        selected_provider: &Provider,
+    ) -> Result<(), String> {
+        let config_text = current_live
+            .get("config")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let config_text =
+            crate::codex_config::apply_codex_stable_proxy_route(config_text, proxy_base_url)
+                .map_err(|e| format!("生成 Codex 固定代理入口失败: {e}"))?;
+        let catalog = self.combined_codex_model_catalog(selected_provider)?;
+        let config_text = crate::codex_config::prepare_codex_config_text_with_prebuilt_catalog(
+            &catalog,
+            &config_text,
+        )
+        .map_err(|e| format!("写入 Codex 固定代理模型目录失败: {e}"))?;
+        crate::codex_config::write_codex_live_config_atomic(Some(&config_text))
+            .map_err(|e| format!("写入 Codex 固定代理配置失败: {e}"))
+    }
+
     fn attach_codex_model_catalog_for_bridge(
         &self,
         live_config: &mut Value,
         selected_provider: &Provider,
     ) -> Result<(), String> {
-        let model_catalog = if crate::settings::get_settings().enable_codex_multi_provider_bridge {
+        let settings = crate::settings::get_settings();
+        let model_catalog = if settings.enable_codex_multi_provider_bridge
+            || settings.enable_codex_stable_proxy_entry
+        {
             self.combined_codex_model_catalog(selected_provider)?
         } else {
             selected_provider
@@ -6582,6 +6692,112 @@ requires_openai_auth = true
             Some("aihubmix-key"),
             "restore should still use the hot-switched provider auth"
         );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn stable_codex_entry_hot_switch_keeps_live_config_and_auth_unchanged() {
+        let _home = TempHome::new();
+        crate::settings::reload_settings().expect("reload settings");
+        crate::settings::update_settings(crate::settings::AppSettings {
+            enable_codex_stable_proxy_entry: true,
+            ..Default::default()
+        })
+        .expect("enable stable Codex entry");
+        seed_codex_model_template();
+
+        let db = Arc::new(Database::memory().expect("init db"));
+        let service = ProxyService::new(db.clone());
+        use_ephemeral_proxy_port(&db).await;
+
+        let relay = native_codex_provider(
+            "relay",
+            "GPT Relay",
+            "gpt-5.6-sol",
+            "https://relay.example/v1",
+            json!([{ "model": "gpt-5.6-sol" }]),
+        );
+        let deepseek = native_codex_provider(
+            "deepseek",
+            "DeepSeek",
+            "deepseek-v4-flash",
+            "https://api.deepseek.example/v1",
+            json!([{ "model": "deepseek-v4-flash", "contextWindow": 1_048_576 }]),
+        );
+        for provider in [&relay, &deepseek] {
+            db.save_provider("codex", provider)
+                .expect("save Codex provider");
+        }
+        db.set_current_provider("codex", "relay")
+            .expect("select relay");
+        crate::settings::set_current_provider(&AppType::Codex, Some("relay"))
+            .expect("set local relay");
+
+        let auth = json!({
+            "auth_mode": "chatgpt",
+            "tokens": { "access_token": "native-bearer" }
+        });
+        crate::codex_config::write_codex_live_atomic(&auth, Some("model = \"gpt-5.6-sol\"\n"))
+            .expect("seed native auth");
+
+        service
+            .set_takeover_for_app("codex", true)
+            .await
+            .expect("enable stable takeover");
+        let live_before = service.read_codex_live().expect("read stable live");
+        let config_before = live_before["config"]
+            .as_str()
+            .expect("stable config")
+            .to_string();
+        assert!(crate::codex_config::codex_config_has_stable_proxy_route(
+            &config_before
+        ));
+        let catalog: Value =
+            crate::config::read_json_file(&crate::codex_config::get_codex_model_catalog_path())
+                .expect("read shared model catalog");
+        assert!(
+            catalog["models"]
+                .as_array()
+                .is_some_and(|models| models.iter().any(|entry| {
+                    crate::codex_config::codex_model_catalog_entry_id(entry)
+                        == Some("deepseek-v4-flash")
+                })),
+            "stable entry should expose native Responses models in its shared catalog"
+        );
+        assert_eq!(live_before["auth"], auth, "stable entry must preserve auth");
+
+        service
+            .hot_switch_provider("codex", "deepseek")
+            .await
+            .expect("hot switch inside MiniRoute");
+        let live_after = service.read_codex_live().expect("read post-switch live");
+        assert_eq!(live_after["config"], json!(config_before));
+        assert_eq!(live_after["auth"], auth);
+        assert_eq!(
+            crate::settings::get_current_provider(&AppType::Codex).as_deref(),
+            Some("deepseek")
+        );
+        assert_eq!(
+            db.get_current_provider("codex")
+                .expect("read current")
+                .as_deref(),
+            Some("deepseek")
+        );
+
+        service
+            .set_takeover_for_app("codex", false)
+            .await
+            .expect("disable stable takeover");
+        let restored = service.read_codex_live().expect("read restored live");
+        assert_eq!(restored["auth"], auth);
+        assert!(
+            !restored["config"]
+                .as_str()
+                .is_some_and(crate::codex_config::codex_config_has_stable_proxy_route),
+            "disabling takeover must restore the pre-takeover config"
+        );
+        crate::settings::update_settings(crate::settings::AppSettings::default())
+            .expect("reset settings");
     }
 
     #[tokio::test]

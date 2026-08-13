@@ -11,8 +11,11 @@ use crate::database::CLAUDE_DESKTOP_OFFICIAL_PROVIDER_ID;
 use crate::error::AppError;
 use crate::provider::{ClaudeDesktopMode, Provider};
 
-pub const PROFILE_ID: &str = "00000000-0000-4000-8000-000000157310";
+// This profile lives in CC Switch's shared compatibility data directory. Keep
+// the upstream ID so either application can restore the official 1P state.
+pub const PROFILE_ID: &str = "00000000-0000-4000-8000-000000157210";
 pub const PROFILE_NAME: &str = crate::config::APP_DISPLAY_NAME;
+const LEGACY_MINIROUTE_PROFILE_ID: &str = "00000000-0000-4000-8000-000000157310";
 
 #[cfg(any(target_os = "macos", windows, test))]
 const CONFIG_FILE: &str = "claude_desktop_config.json";
@@ -78,6 +81,7 @@ struct ClaudeDesktopPaths {
     threep_config_path: PathBuf,
     config_library_path: PathBuf,
     profile_path: PathBuf,
+    legacy_miniroute_profile_path: PathBuf,
     meta_path: PathBuf,
 }
 
@@ -150,8 +154,15 @@ pub fn get_status(db: &Database, proxy_running: bool) -> Result<ClaudeDesktopSta
 
     let paths = current_platform_paths()?;
     let applied_id = read_applied_id(&paths.meta_path);
-    let configured = paths.profile_path.exists() || meta_has_profile_entry(&paths.meta_path);
-    let profile = read_json_or_empty(&paths.profile_path).unwrap_or_else(|_| json!({}));
+    let configured = paths.profile_path.exists()
+        || paths.legacy_miniroute_profile_path.exists()
+        || meta_has_profile_entry(&paths.meta_path);
+    let active_profile_path = if paths.profile_path.exists() {
+        &paths.profile_path
+    } else {
+        &paths.legacy_miniroute_profile_path
+    };
+    let profile = read_json_or_empty(active_profile_path).unwrap_or_else(|_| json!({}));
     let actual_base_url = profile
         .get("inferenceGatewayBaseUrl")
         .and_then(Value::as_str)
@@ -1004,6 +1015,9 @@ fn apply_provider_to_paths_inner(
 
     write_deployment_mode(&paths.normal_config_path, "3p")?;
     write_deployment_mode(&paths.threep_config_path, "3p")?;
+    if paths.legacy_miniroute_profile_path.exists() {
+        delete_file(&paths.legacy_miniroute_profile_path)?;
+    }
     write_json_file(&paths.profile_path, &profile)?;
     write_meta(&paths.meta_path, Some(PROFILE_ID))?;
 
@@ -1017,6 +1031,9 @@ fn restore_official_at_paths_inner(paths: &ClaudeDesktopPaths) -> Result<(), App
 
     if paths.profile_path.exists() {
         delete_file(&paths.profile_path)?;
+    }
+    if paths.legacy_miniroute_profile_path.exists() {
+        delete_file(&paths.legacy_miniroute_profile_path)?;
     }
     write_meta(&paths.meta_path, None)?;
 
@@ -1064,6 +1081,7 @@ fn snapshot_files(paths: &ClaudeDesktopPaths) -> Result<Vec<FileSnapshot>, AppEr
         &paths.normal_config_path,
         &paths.threep_config_path,
         &paths.profile_path,
+        &paths.legacy_miniroute_profile_path,
         &paths.meta_path,
     ]
     .into_iter()
@@ -1158,7 +1176,12 @@ fn write_meta(path: &Path, applied_profile_id: Option<&str>) -> Result<(), AppEr
         .cloned()
         .unwrap_or_default();
 
-    entries.retain(|entry| entry.get("id").and_then(Value::as_str) != Some(PROFILE_ID));
+    entries.retain(|entry| {
+        !entry
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(is_managed_profile_id)
+    });
 
     match applied_profile_id {
         Some(id) => {
@@ -1172,7 +1195,7 @@ fn write_meta(path: &Path, applied_profile_id: Option<&str>) -> Result<(), AppEr
             let should_clear_applied = obj
                 .get("appliedId")
                 .and_then(Value::as_str)
-                .is_some_and(|id| id == PROFILE_ID);
+                .is_some_and(is_managed_profile_id);
             if should_clear_applied {
                 if let Some(next_id) = entries
                     .iter()
@@ -1199,14 +1222,21 @@ fn read_applied_id(path: &Path) -> Option<String> {
     })
 }
 
+fn is_managed_profile_id(id: &str) -> bool {
+    id == PROFILE_ID || id == LEGACY_MINIROUTE_PROFILE_ID
+}
+
 fn meta_has_profile_entry(path: &Path) -> bool {
     read_json_or_empty(path)
         .ok()
         .and_then(|value| value.get("entries").and_then(Value::as_array).cloned())
         .is_some_and(|entries| {
-            entries
-                .iter()
-                .any(|entry| entry.get("id").and_then(Value::as_str) == Some(PROFILE_ID))
+            entries.iter().any(|entry| {
+                entry
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(is_managed_profile_id)
+            })
         })
 }
 
@@ -1285,6 +1315,8 @@ fn pick_windows_claude_dir(local_app_data: &Path, threep: bool) -> Option<PathBu
 fn paths_from_dirs(normal_dir: PathBuf, threep_dir: PathBuf) -> ClaudeDesktopPaths {
     let config_library_path = threep_dir.join(CONFIG_LIBRARY_DIR);
     let profile_path = config_library_path.join(format!("{PROFILE_ID}.json"));
+    let legacy_miniroute_profile_path =
+        config_library_path.join(format!("{LEGACY_MINIROUTE_PROFILE_ID}.json"));
     let meta_path = config_library_path.join("_meta.json");
 
     ClaudeDesktopPaths {
@@ -1292,6 +1324,7 @@ fn paths_from_dirs(normal_dir: PathBuf, threep_dir: PathBuf) -> ClaudeDesktopPat
         threep_config_path: threep_dir.join(CONFIG_FILE),
         config_library_path,
         profile_path,
+        legacy_miniroute_profile_path,
         meta_path,
     }
 }
@@ -2148,6 +2181,57 @@ mod tests {
             .expect("entries")
             .iter()
             .any(|entry| entry["id"] == json!(PROFILE_ID)));
+    }
+
+    #[test]
+    fn claude_desktop_restore_removes_legacy_miniroute_profile() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = test_paths(temp.path());
+
+        write_json_file(
+            &paths.normal_config_path,
+            &json!({"deploymentMode": "3p", "normal": true}),
+        )
+        .expect("write normal config");
+        write_json_file(
+            &paths.threep_config_path,
+            &json!({"deploymentMode": "3p", "threep": true}),
+        )
+        .expect("write 3p config");
+        write_json_file(
+            &paths.legacy_miniroute_profile_path,
+            &json!({
+                "inferenceProvider": "gateway",
+                "inferenceGatewayBaseUrl": "https://desktop.test"
+            }),
+        )
+        .expect("write legacy profile");
+        write_json_file(
+            &paths.meta_path,
+            &json!({
+                "appliedId": LEGACY_MINIROUTE_PROFILE_ID,
+                "entries": [
+                    {"id": LEGACY_MINIROUTE_PROFILE_ID, "name": "CC MiniRoute"},
+                    {"id": "other-profile", "name": "Other"}
+                ]
+            }),
+        )
+        .expect("write meta");
+
+        restore_official_at_paths(&paths).expect("restore official");
+
+        let normal: Value = read_json_file(&paths.normal_config_path).expect("read normal config");
+        let threep: Value = read_json_file(&paths.threep_config_path).expect("read 3p config");
+        let meta: Value = read_json_file(&paths.meta_path).expect("read meta");
+
+        assert_eq!(normal["deploymentMode"], json!("1p"));
+        assert_eq!(threep["deploymentMode"], json!("1p"));
+        assert!(!paths.legacy_miniroute_profile_path.exists());
+        assert_eq!(meta["appliedId"], json!("other-profile"));
+        assert_eq!(
+            meta["entries"],
+            json!([{"id": "other-profile", "name": "Other"}])
+        );
     }
 
     #[test]
