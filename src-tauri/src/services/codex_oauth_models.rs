@@ -66,6 +66,7 @@ fn parse_models(value: Value) -> Vec<FetchedModel> {
 
     models.sort_by(|a, b| a.id.cmp(&b.id));
     models.dedup_by(|a, b| a.id == b.id);
+    models.retain(|model| !crate::codex_config::is_retired_codex_official_model(&model.id));
     models
 }
 
@@ -135,30 +136,41 @@ mod tests {
     fn parse_codex_oauth_models_accepts_openai_style_data() {
         let models = parse_models(json!({
             "data": [
-                { "id": "gpt-5.4", "owned_by": "openai" },
-                { "id": "gpt-5.4-mini", "ownedBy": "openai" }
+                { "id": "gpt-5.5", "owned_by": "openai" },
+                { "id": "gpt-5.6-sol", "ownedBy": "openai" }
             ]
         }));
 
         assert_eq!(models.len(), 2);
-        assert_eq!(models[0].id, "gpt-5.4");
+        assert_eq!(models[0].id, "gpt-5.5");
         assert_eq!(models[0].owned_by.as_deref(), Some("openai"));
-        assert_eq!(models[1].id, "gpt-5.4-mini");
+        assert_eq!(models[1].id, "gpt-5.6-sol");
         assert_eq!(models[1].owned_by.as_deref(), Some("openai"));
     }
 
     #[test]
-    fn parse_codex_oauth_models_accepts_model_list_shape() {
+    fn parse_codex_oauth_models_filters_only_exact_retired_ids() {
         let models = parse_models(json!({
             "models": [
+                "gpt-5.4",
+                "gpt-5.4-mini",
                 { "slug": "gpt-5.3-codex", "display_name": "GPT-5.3 Codex" },
+                "gpt-5.2",
+                "gpt-5.3-codex-spark",
+                "gpt-5.2-codex",
+                "gpt-5.4-nano",
                 "gpt-5.5"
             ]
         }));
 
         assert_eq!(
             models.into_iter().map(|model| model.id).collect::<Vec<_>>(),
-            vec!["gpt-5.3-codex".to_string(), "gpt-5.5".to_string()]
+            vec![
+                "gpt-5.2-codex".to_string(),
+                "gpt-5.3-codex-spark".to_string(),
+                "gpt-5.4-nano".to_string(),
+                "gpt-5.5".to_string()
+            ]
         );
     }
 
@@ -166,13 +178,13 @@ mod tests {
     fn parse_codex_oauth_models_deduplicates_ids() {
         let models = parse_models(json!({
             "data": [
-                { "id": "gpt-5.4" },
-                { "model": "gpt-5.4" }
+                { "id": "gpt-5.5" },
+                { "model": "gpt-5.5" }
             ]
         }));
 
         assert_eq!(models.len(), 1);
-        assert_eq!(models[0].id, "gpt-5.4");
+        assert_eq!(models[0].id, "gpt-5.5");
     }
 
     #[test]
@@ -186,7 +198,7 @@ mod tests {
 
         assert_eq!(
             models.into_iter().map(|model| model.id).collect::<Vec<_>>(),
-            vec!["gpt-5.4".to_string(), "gpt-5.5".to_string()]
+            vec!["gpt-5.5".to_string()]
         );
     }
 }

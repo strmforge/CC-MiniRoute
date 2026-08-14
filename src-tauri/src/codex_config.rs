@@ -26,6 +26,20 @@ pub const CC_SWITCH_CODEX_OFFICIAL_PROXY_PROVIDER_ID: &str = "cc-miniroute-offic
 pub const MINIROUTE_CODEX_MODEL_CATALOG_FILENAME: &str = "cc-miniroute-model-catalog.json";
 const CODEX_PROXY_AUTH_PLACEHOLDER: &str = "PROXY_MANAGED";
 
+/// Exact model ids retired from the first-party Codex picker. The bundled CLI
+/// catalog can retain migration-only rows after the live picker removes them,
+/// so MiniRoute must not copy those rows into its generated official catalog.
+/// User-configured provider catalogs remain untouched.
+const CODEX_RETIRED_OFFICIAL_MODEL_IDS: &[&str] =
+    &["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"];
+
+pub(crate) fn is_retired_codex_official_model(model: &str) -> bool {
+    let model = model.trim();
+    CODEX_RETIRED_OFFICIAL_MODEL_IDS
+        .iter()
+        .any(|retired| model.eq_ignore_ascii_case(retired))
+}
+
 /// Models in this family stay on the currently selected Codex provider and its
 /// normal failover chain. The multi-provider bridge only claims exact non-GPT
 /// model ids declared by another provider.
@@ -893,7 +907,13 @@ fn merge_codex_catalog_with_gpt_entries(
             "Codex model catalog has no models array".into(),
         ));
     };
-    let mut merged = official_gpt_entries;
+    let mut merged = official_gpt_entries
+        .into_iter()
+        .filter(|entry| {
+            codex_model_catalog_entry_id(entry)
+                .is_none_or(|id| !is_retired_codex_official_model(id))
+        })
+        .collect::<Vec<_>>();
     let mut seen = merged
         .iter()
         .filter_map(codex_model_catalog_entry_id)
@@ -952,7 +972,9 @@ fn codex_gpt_entries_from_catalog(catalog: &Value) -> Vec<Value> {
             models
                 .iter()
                 .filter(|entry| {
-                    codex_model_catalog_entry_id(entry).is_some_and(is_codex_openai_family_model)
+                    codex_model_catalog_entry_id(entry).is_some_and(|id| {
+                        is_codex_openai_family_model(id) && !is_retired_codex_official_model(id)
+                    })
                 })
                 .cloned()
                 .collect::<Vec<_>>()
@@ -2962,6 +2984,54 @@ mod tests {
         );
         assert_eq!(sol["additional_speed_tiers"], json!(["fast"]));
         assert_eq!(sol["service_tiers"][0]["id"], json!("priority"));
+    }
+
+    #[test]
+    fn official_gpt_catalog_omits_only_exact_retired_models() {
+        let catalog = json!({
+            "models": [
+                { "slug": "gpt-5.4" },
+                { "slug": "gpt-5.4-mini" },
+                { "slug": "gpt-5.3-codex" },
+                { "slug": "gpt-5.2" },
+                { "slug": "gpt-5.3-codex-spark" },
+                { "slug": "gpt-5.2-codex" },
+                { "slug": "gpt-5.4-nano" },
+                { "slug": "gpt-5.5" },
+                { "slug": "deepseek-v4" }
+            ]
+        });
+
+        let ids = codex_gpt_entries_from_catalog(&catalog)
+            .into_iter()
+            .filter_map(|entry| codex_model_catalog_entry_id(&entry).map(str::to_string))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            ids,
+            vec![
+                "gpt-5.3-codex-spark".to_string(),
+                "gpt-5.2-codex".to_string(),
+                "gpt-5.4-nano".to_string(),
+                "gpt-5.5".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn explicit_provider_catalog_can_still_use_retired_official_model_id() {
+        let input = json!({
+            "models": [{ "slug": "gpt-5.4", "context_window": 128000 }]
+        });
+        let official = vec![json!({ "slug": "gpt-5.4", "context_window": 272000 })];
+        let preferred = HashSet::from(["gpt-5.4".to_string()]);
+
+        let output =
+            merge_codex_catalog_with_gpt_entries(&input, official, &preferred).expect("catalog");
+
+        assert_eq!(output["models"].as_array().map(Vec::len), Some(1));
+        assert_eq!(output["models"][0]["slug"], json!("gpt-5.4"));
+        assert_eq!(output["models"][0]["context_window"], json!(128000));
     }
 
     #[test]
