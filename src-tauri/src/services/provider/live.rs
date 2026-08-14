@@ -1278,6 +1278,14 @@ fn sync_current_provider_for_app_respecting_takeover(
 pub fn sync_current_to_live(state: &AppState) -> Result<(), AppError> {
     // Sync providers based on mode
     for app_type in AppType::all() {
+        if !should_bulk_sync_current_provider(&app_type) {
+            log::debug!(
+                "Skipping {} during bulk live sync; it requires an explicit provider switch",
+                app_type.as_str()
+            );
+            continue;
+        }
+
         if app_type.is_additive_mode() {
             // Additive mode: sync ALL providers
             sync_all_providers_to_live(state, &app_type)?;
@@ -1303,6 +1311,14 @@ pub fn sync_current_to_live(state: &AppState) -> Result<(), AppError> {
     }
 
     mcp_result
+}
+
+fn should_bulk_sync_current_provider(app_type: &AppType) -> bool {
+    // Claude Desktop provider selection changes deploymentMode between 1p and
+    // 3p. Unrelated post-change syncs (for example after saving Codex settings)
+    // must never replay a stale Claude Desktop database selection. Its live
+    // profile is changed only by an explicit Claude Desktop provider switch.
+    !matches!(app_type, AppType::ClaudeDesktop)
 }
 
 /// Read current live settings for an app type
@@ -1977,6 +1993,13 @@ pub fn remove_openclaw_provider_from_live(provider_id: &str) -> Result<(), AppEr
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn bulk_live_sync_requires_explicit_claude_desktop_switch() {
+        assert!(!should_bulk_sync_current_provider(&AppType::ClaudeDesktop));
+        assert!(should_bulk_sync_current_provider(&AppType::Codex));
+        assert!(should_bulk_sync_current_provider(&AppType::Claude));
+    }
 
     #[test]
     fn kimi_for_coding_effective_settings_backfill_256k_context() {
