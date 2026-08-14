@@ -1707,6 +1707,18 @@ impl RequestForwarder {
             self.apply_media_prevention(&mut request_body, provider);
         }
 
+        // A conversation may contain raw reasoning items and synthetic item IDs
+        // emitted by a third-party Responses provider. ChatGPT's Codex backend
+        // accepts replayed reasoning only with empty `content`, and unstored
+        // requests cannot reference any prior item ID. Normalize only the fixed
+        // official route; native third-party Responses providers may require the
+        // raw reasoning content for tool-call continuation.
+        if matches!(app_type, AppType::Codex)
+            && super::providers::is_codex_official_provider(provider)
+        {
+            sanitize_codex_official_responses_replay(&mut request_body);
+        }
+
         // 过滤私有参数（以 `_` 开头的字段），防止内部信息泄露到上游
         // 默认使用空白名单，过滤所有 _ 前缀字段
         let mut filtered_body = prepare_upstream_request_body(request_body);
@@ -3774,6 +3786,57 @@ fn prepare_upstream_request_body(request_body: Value) -> Value {
     canonicalize_value(filter_private_params_with_whitelist(request_body, &[]))
 }
 
+fn sanitize_codex_official_responses_replay(body: &mut Value) -> usize {
+    let strip_all_ids = body.get("store").and_then(Value::as_bool) == Some(false);
+    let Some(input) = body.get_mut("input").and_then(Value::as_array_mut) else {
+        return 0;
+    };
+
+    let mut changes = 0;
+    for item in input {
+        let Some(object) = item.as_object_mut() else {
+            continue;
+        };
+        let item_type = object
+            .get("type")
+            .and_then(Value::as_str)
+            .map(ToString::to_string);
+
+        if item_type.as_deref() == Some("reasoning") {
+            if object
+                .get("content")
+                .and_then(Value::as_array)
+                .is_some_and(|content| !content.is_empty())
+            {
+                object.insert("content".to_string(), Value::Array(Vec::new()));
+                changes += 1;
+            }
+        }
+
+        let expected_id_prefix = match item_type.as_deref() {
+            Some("message") => Some("msg_"),
+            Some("agent_message") => Some("amsg_"),
+            Some("reasoning") => Some("rs_"),
+            Some("function_call") => Some("fc_"),
+            Some("custom_tool_call") => Some("ctc_"),
+            Some("tool_search_call") => Some("tsc_"),
+            Some("web_search_call") => Some("ws_"),
+            _ => None,
+        };
+        let invalid_typed_id = expected_id_prefix.is_some_and(|prefix| {
+            object
+                .get("id")
+                .and_then(Value::as_str)
+                .is_none_or(|id| !id.starts_with(prefix))
+        });
+        if object.contains_key("id") && (strip_all_ids || invalid_typed_id) {
+            object.remove("id");
+            changes += 1;
+        }
+    }
+    changes
+}
+
 fn log_prompt_cache_trace(
     app_type: &AppType,
     provider: &Provider,
@@ -4062,6 +4125,79 @@ mod tests {
             serde_json::to_string(&prepared).unwrap(),
             r#"{"a":2,"tools":[{"name":"lookup","parameters":{"properties":{"_id":{"type":"string"},"a":{"type":"string"},"b":{"type":"number"}},"type":"object"}}],"z":1}"#
         );
+    }
+
+    #[test]
+    fn official_responses_replay_drops_third_party_reasoning_content() {
+        let mut body = json!({
+            "model": "gpt-5.6-sol",
+            "input": [
+                {
+                    "type": "reasoning",
+                    "id": "rs_deepseek",
+                    "summary": [],
+                    "content": [{
+                        "type": "reasoning_text",
+                        "text": "third-party reasoning"
+                    }]
+                },
+                {
+                    "type": "message",
+                    "id": "msg_answer",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "visible answer"}]
+                }
+            ]
+        });
+
+        let changes = sanitize_codex_official_responses_replay(&mut body);
+
+        assert_eq!(changes, 1);
+        assert_eq!(body["input"][0]["content"], json!([]));
+        assert_eq!(body["input"][0]["id"], json!("rs_deepseek"));
+        assert_eq!(body["input"][1]["content"][0]["text"], "visible answer");
+    }
+
+    #[test]
+    fn official_unstored_replay_drops_all_item_ids_but_keeps_call_ids() {
+        let mut body = json!({
+            "store": false,
+            "input": [
+                {"type": "message", "id": "item_wrong", "role": "user", "content": "hi"},
+                {"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "read", "arguments": "{}"},
+                {"type": "function_call_output", "id": "item_output", "call_id": "call_1", "output": "ok"}
+            ]
+        });
+
+        let changes = sanitize_codex_official_responses_replay(&mut body);
+
+        assert_eq!(changes, 3);
+        for item in body["input"].as_array().expect("input") {
+            assert!(item.get("id").is_none());
+        }
+        assert_eq!(body["input"][1]["call_id"], "call_1");
+        assert_eq!(body["input"][2]["call_id"], "call_1");
+    }
+
+    #[test]
+    fn official_stored_replay_removes_only_type_invalid_item_ids() {
+        let mut body = json!({
+            "store": true,
+            "input": [
+                {"type": "message", "id": "item_wrong", "role": "assistant", "content": "old"},
+                {"type": "message", "id": "msg_valid", "role": "assistant", "content": "new"},
+                {"type": "reasoning", "id": "rs_valid", "summary": [], "content": []},
+                {"type": "function_call_output", "id": "opaque_output", "call_id": "call_1", "output": "ok"}
+            ]
+        });
+
+        let changes = sanitize_codex_official_responses_replay(&mut body);
+
+        assert_eq!(changes, 1);
+        assert!(body["input"][0].get("id").is_none());
+        assert_eq!(body["input"][1]["id"], "msg_valid");
+        assert_eq!(body["input"][2]["id"], "rs_valid");
+        assert_eq!(body["input"][3]["id"], "opaque_output");
     }
 
     #[test]

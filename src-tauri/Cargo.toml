@@ -1,6 +1,6 @@
 [package]
 name = "cc-miniroute"
-version = "3.19.3"
+version = "3.19.5"
 description = "Isolated local routing companion for Codex model experiments"
 authors = ["Jason Young"]
 license = "MIT"

@@ -105,7 +105,7 @@ export function CodexOAuthImportDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl" zIndex="nested">
+      <DialogContent className="max-w-2xl" zIndex="top">
         <DialogHeader>
           <DialogTitle className="text-balance">
             {t("codexOauth.importTitle")}
@@ -372,7 +372,7 @@ export function CodexOAuthAccountDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg" zIndex="nested">
+      <DialogContent className="max-w-lg" zIndex="top">
         <DialogHeader>
           <DialogTitle className="truncate">{account.login}</DialogTitle>
           <DialogDescription className="text-pretty">

@@ -2586,7 +2586,15 @@ impl ProxyService {
             };
 
         let prepare_result: Result<(), String> = async {
-            if should_sync_backup && !stable_codex_switch {
+            if stable_codex_switch {
+                // The stable entry deliberately keeps config.toml and auth.json
+                // fixed, but its generated catalog is provider-specific. Refresh
+                // that projection on every hot switch so reasoning levels and
+                // context windows follow the selected relay instead of the
+                // previous provider.
+                self.sync_codex_live_from_provider_while_proxy_active(&provider)
+                    .await?;
+            } else if should_sync_backup {
                 self.update_live_backup_from_provider_inner(app_type, &provider)
                     .await?;
 
@@ -2947,6 +2955,8 @@ impl ProxyService {
         let mut selected_provider = selected_provider.clone();
         Self::ensure_codex_configured_model_in_catalog(&mut selected_provider);
         let selected_provider_id = selected_provider.id.clone();
+        let selected_provider_gpt_model_ids =
+            Self::selected_provider_gpt_model_ids(&selected_provider);
         provider_by_id.insert(selected_provider_id.clone(), selected_provider);
         for provider in all_providers.into_values() {
             let mut provider = provider;
@@ -3010,9 +3020,35 @@ impl ProxyService {
             .map_err(|e| format!("生成 Codex 联合模型目录失败: {e}"))
             .and_then(|catalog| {
                 let catalog = catalog.unwrap_or_else(|| json!({ "models": [] }));
-                crate::codex_config::codex_model_catalog_with_default_gpt_entries(&catalog)
-                    .map_err(|e| format!("补全 Codex GPT 模型目录失败: {e}"))
+                crate::codex_config::codex_model_catalog_with_default_gpt_entries_prefer_provider(
+                    &catalog,
+                    &selected_provider_gpt_model_ids,
+                )
+                .map_err(|e| format!("补全 Codex GPT 模型目录失败: {e}"))
             })
+    }
+
+    fn selected_provider_gpt_model_ids(provider: &Provider) -> HashSet<String> {
+        if crate::proxy::providers::is_codex_official_provider(provider) {
+            return HashSet::new();
+        }
+
+        provider
+            .settings_config
+            .get("modelCatalog")
+            .and_then(|catalog| catalog.get("models"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(crate::codex_config::codex_model_catalog_entry_id)
+            .filter(|model| crate::codex_config::is_codex_openai_family_model(model))
+            .map(|model| model.to_ascii_lowercase())
+            .chain(
+                crate::proxy::providers::codex_provider_upstream_model(provider)
+                    .filter(|model| crate::codex_config::is_codex_openai_family_model(model))
+                    .map(|model| model.to_ascii_lowercase()),
+            )
+            .collect()
     }
 
     fn codex_non_gpt_model_ids(provider: &Provider) -> Vec<String> {

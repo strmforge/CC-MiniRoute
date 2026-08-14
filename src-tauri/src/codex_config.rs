@@ -869,18 +869,24 @@ pub fn codex_model_catalog_from_provider_catalogs(
     Ok((!entries.is_empty()).then(|| json!({ "models": entries })))
 }
 
-/// Combine Codex's complete built-in GPT rows with provider-specific aliases
-/// and non-GPT rows. Official GPT metadata wins for matching ids so reasoning
-/// levels and speed tiers cannot be replaced by a relay's synthetic one-row
-/// catalog; relay-only GPT aliases are still retained.
-pub fn codex_model_catalog_with_default_gpt_entries(catalog: &Value) -> Result<Value, AppError> {
+/// Combine the bundled official GPT catalog with provider rows. A selected
+/// non-official provider may explicitly own a same-named GPT row whose context
+/// window or reasoning levels differ from the official account; those rows are
+/// allowed to win only when the caller explicitly passes their ids. This keeps
+/// official login mode on the bundled capabilities while making relay switches
+/// reflect the relay's own catalog.
+pub fn codex_model_catalog_with_default_gpt_entries_prefer_provider(
+    catalog: &Value,
+    preferred_gpt_ids: &HashSet<String>,
+) -> Result<Value, AppError> {
     let official_gpt_entries = load_codex_gpt_catalog_entries()?;
-    merge_codex_catalog_with_gpt_entries(catalog, official_gpt_entries)
+    merge_codex_catalog_with_gpt_entries(catalog, official_gpt_entries, preferred_gpt_ids)
 }
 
 fn merge_codex_catalog_with_gpt_entries(
     catalog: &Value,
     official_gpt_entries: Vec<Value>,
+    preferred_gpt_ids: &HashSet<String>,
 ) -> Result<Value, AppError> {
     let Some(models) = catalog.get("models").and_then(Value::as_array) else {
         return Err(AppError::Message(
@@ -897,6 +903,16 @@ fn merge_codex_catalog_with_gpt_entries(
         let Some(id) = codex_model_catalog_entry_id(entry) else {
             continue;
         };
+        let normalized_id = id.to_ascii_lowercase();
+        if preferred_gpt_ids.contains(&normalized_id) && is_codex_openai_family_model(id) {
+            if let Some(existing) = merged.iter_mut().find(|official| {
+                codex_model_catalog_entry_id(official)
+                    .is_some_and(|official_id| official_id.eq_ignore_ascii_case(id))
+            }) {
+                *existing = entry.clone();
+                continue;
+            }
+        }
         if seen.insert(id.to_ascii_lowercase()) {
             merged.push(entry.clone());
         }
@@ -2918,7 +2934,8 @@ mod tests {
             json!({ "slug": "gpt-5.6-terra" }),
             json!({ "slug": "gpt-5.6-luna" }),
         ];
-        let output = merge_codex_catalog_with_gpt_entries(&input, official).expect("catalog");
+        let output = merge_codex_catalog_with_gpt_entries(&input, official, &HashSet::new())
+            .expect("catalog");
         let models = output["models"].as_array().expect("models");
 
         assert_eq!(
@@ -2945,6 +2962,45 @@ mod tests {
         );
         assert_eq!(sol["additional_speed_tiers"], json!(["fast"]));
         assert_eq!(sol["service_tiers"][0]["id"], json!("priority"));
+    }
+
+    #[test]
+    fn relay_can_prefer_same_named_gpt_catalog_row_without_changing_default() {
+        let input = json!({
+            "models": [{
+                "slug": "gpt-5.6-sol",
+                "context_window": 128000,
+                "supported_reasoning_levels": [{ "effort": "high" }]
+            }]
+        });
+        let official = vec![json!({
+            "slug": "gpt-5.6-sol",
+            "context_window": 512000,
+            "supported_reasoning_levels": [
+                { "effort": "low" },
+                { "effort": "medium" },
+                { "effort": "high" },
+                { "effort": "xhigh" },
+                { "effort": "max" }
+            ]
+        })];
+
+        let default_catalog =
+            merge_codex_catalog_with_gpt_entries(&input, official.clone(), &HashSet::new())
+                .expect("default catalog");
+        assert_eq!(
+            default_catalog["models"][0]["context_window"],
+            json!(512000)
+        );
+
+        let preferred = HashSet::from(["gpt-5.6-sol".to_string()]);
+        let relay_catalog = merge_codex_catalog_with_gpt_entries(&input, official, &preferred)
+            .expect("relay catalog");
+        assert_eq!(relay_catalog["models"][0]["context_window"], json!(128000));
+        assert_eq!(
+            relay_catalog["models"][0]["supported_reasoning_levels"],
+            json!([{ "effort": "high" }])
+        );
     }
 
     #[test]
